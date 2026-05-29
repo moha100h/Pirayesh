@@ -53,7 +53,7 @@
 - Ubuntu 20.04 / 22.04
 - دسترسی root یا sudo
 - توکن ربات از [@BotFather](https://t.me/BotFather)
-- آیدی عددی ادمین (از [@userinfobot](https://t.me/userinfobot))
+- آیدی عددی ادمین از [@userinfobot](https://t.me/userinfobot)
 
 ### نصب یک‌مرحله‌ای
 
@@ -65,10 +65,15 @@ chmod +x install.sh
 ```
 
 اسکریپت فقط دو چیز می‌پرسد:
-1. **توکن ربات** — از @BotFather بگیرید
-2. **آیدی عددی ادمین** — از @userinfobot بگیرید
+
+```
+Bot Token (from @BotFather): 
+Admin Numeric ID (from @userinfobot): 
+```
 
 بقیه تنظیمات (نام آرایشگاه، تلفن، آدرس، شماره کارت) را از **پنل مدیریت ربات** انجام دهید.
+
+> **نکته:** اسکریپت به‌صورت خودکار پوشه `data/` را می‌سازد و دیتابیس SQLite داخل آن ذخیره می‌شود.
 
 ---
 
@@ -109,6 +114,7 @@ Pirayesh/
 │   ├── services/
 │   │   └── jalali.py      # تبدیل تاریخ شمسی
 │   └── config.py          # تنظیمات از .env
+├── data/                  # دیتابیس SQLite (ساخته می‌شود خودکار)
 ├── main.py                # نقطه شروع ربات
 ├── Dockerfile
 ├── docker-compose.yml
@@ -121,7 +127,8 @@ Pirayesh/
 
 ## 🗄️ دیتابیس
 
-SQLite (پیش‌فرض) — فایل `pirayesh.db` در همان پوشه پروژه ذخیره می‌شود.  
+SQLite (پیش‌فرض) — فایل `pirayesh.db` داخل پوشه `data/` ذخیره می‌شود که به‌صورت volume به container مپ شده است.
+
 برای محیط production می‌توانید `DATABASE_URL` را در `.env` به PostgreSQL تغییر دهید:
 
 ```
