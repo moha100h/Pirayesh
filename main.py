@@ -4,13 +4,24 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
-from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram.types import TelegramObject
+from aiogram import BaseMiddleware
+from typing import Callable, Awaitable, Any
 
 from app.config import config
 from app.db.database import init_db, AsyncSessionLocal
 from app.handlers import start, booking, services, admin, payment
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
+class DbMiddleware(BaseMiddleware):
+    async def __call__(self, handler: Callable, event: TelegramObject, data: dict) -> Any:
+        async with AsyncSessionLocal() as session:
+            data["session"] = session
+            return await handler(event, data)
 
 async def main():
     await init_db()
@@ -19,18 +30,6 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     dp = Dispatcher(storage=MemoryStorage())
-
-    # middleware: inject session
-    from aiogram import BaseMiddleware
-    from typing import Callable, Awaitable, Any
-    from aiogram.types import TelegramObject
-
-    class DbMiddleware(BaseMiddleware):
-        async def __call__(self, handler: Callable, event: TelegramObject, data: dict) -> Any:
-            async with AsyncSessionLocal() as session:
-                data["session"] = session
-                return await handler(event, data)
-
     dp.message.middleware(DbMiddleware())
     dp.callback_query.middleware(DbMiddleware())
 
@@ -40,7 +39,8 @@ async def main():
     dp.include_router(payment.router)
     dp.include_router(admin.router)
 
-    await dp.start_polling(bot)
+    logging.info(f"Bot started | Shop: {config.SHOP_NAME} | Admins: {config.ADMIN_IDS}")
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     asyncio.run(main())
