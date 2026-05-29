@@ -11,14 +11,12 @@ router = Router()
 @router.message(F.text == "✂️ خدمات و قیمت‌ها")
 async def show_services(msg: Message, session: AsyncSession):
     if not config.SERVICES_VISIBLE:
-        await msg.answer("⚠️ نمایش خدمات در حال حاضر غیرفعال است.")
-        return
-    r = await session.execute(select(Service).where(Service.is_active == True))
+        await msg.answer("⚠️ لیست خدمات در حال حاضر در دسترس نیست."); return
+    r = await session.execute(select(Service).where(Service.is_active == True).order_by(Service.id))
     services = r.scalars().all()
     if not services:
-        await msg.answer("هنوز خدماتی ثبت نشده.", reply_markup=back_btn())
-        return
-    lines = ["✂️ <b>خدمات و قیمت‌ها</b>\n"]
+        await msg.answer("⚠️ هیچ خدماتی تعریف نشده است."); return
+    lines = [f"✂️ <b>{config.SHOP_NAME}</b> — لیست خدمات\n"]
     for s in services:
-        lines.append(f"• <b>{s.name}</b> — {s.price:,} تومان  ({s.duration} دقیقه)")
-    await msg.answer("\n".join(lines), reply_markup=back_btn(), parse_mode="HTML")
+        lines.append(f"• <b>{s.name}</b>\n  💰 {s.price:,} تومان  |  ⏱ {s.duration} دقیقه")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
