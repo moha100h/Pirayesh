@@ -22,8 +22,11 @@ class User(Base):
     __tablename__ = "users"
     id         = Column(BigInteger, primary_key=True)
     full_name  = Column(String(120))
+    first_name = Column(String(60))
+    last_name  = Column(String(60))
     phone      = Column(String(20))
     username   = Column(String(80))
+    registered = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     bookings   = relationship("Booking", back_populates="user")
 
@@ -39,10 +42,16 @@ class Service(Base):
 class TimeSlot(Base):
     __tablename__ = "timeslots"
     id        = Column(Integer, primary_key=True, autoincrement=True)
-    date      = Column(String(10), nullable=False)
-    time      = Column(String(5),  nullable=False)
+    date      = Column(String(10), nullable=False)   # YYYY-MM-DD
+    time      = Column(String(5),  nullable=False)   # HH:MM
     is_booked = Column(Boolean, default=False)
     booking   = relationship("Booking", back_populates="slot", uselist=False)
+
+class HolidayDate(Base):
+    __tablename__ = "holidays"
+    id    = Column(Integer, primary_key=True, autoincrement=True)
+    date  = Column(String(10), nullable=False, unique=True)  # YYYY-MM-DD
+    label = Column(String(100), default="تعطیل")
 
 class Booking(Base):
     __tablename__ = "bookings"
