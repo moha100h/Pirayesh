@@ -83,7 +83,6 @@ def booking_detail_kb(booking_id: int, status: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-# ── Admin keyboards ───────────────────────────────────────────────────────────
 def admin_main_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
@@ -98,8 +97,11 @@ def admin_main_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="💳 پرداخت‌های معلق", callback_data="adm:payments"),
         InlineKeyboardButton(text="📊 آمار",             callback_data="adm:stats")
     )
-    kb.row(InlineKeyboardButton(text="🔧 تنظیمات",      callback_data="adm:settings"))
-    kb.row(InlineKeyboardButton(text="🔙 منوی اصلی",    callback_data="nav:main"))
+    kb.row(
+        InlineKeyboardButton(text="🏪 اطلاعات آرایشگاه", callback_data="adm:shopinfo"),
+        InlineKeyboardButton(text="🔧 تنظیمات",           callback_data="adm:settings")
+    )
+    kb.row(InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="nav:main"))
     return kb.as_markup()
 
 
@@ -142,8 +144,22 @@ def admin_settings_kb(booking: bool, payment: bool, services: bool) -> InlineKey
         text=f"{'🟢' if services else '🔴'} نمایش خدمات",
         callback_data="adm:toggle:services"
     ))
-    kb.row(InlineKeyboardButton(text="💳 تغییر شماره کارت", callback_data="adm:set:card"))
-    kb.row(InlineKeyboardButton(text="🔙 پنل مدیریت",       callback_data="adm:main"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
+    return kb.as_markup()
+
+
+def admin_shop_info_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="✏️ نام آرایشگاه", callback_data="adm:shop:set:name"),
+        InlineKeyboardButton(text="📞 تلفن",          callback_data="adm:shop:set:phone")
+    )
+    kb.row(
+        InlineKeyboardButton(text="📍 آدرس",          callback_data="adm:shop:set:address"),
+        InlineKeyboardButton(text="💳 شماره کارت",    callback_data="adm:shop:set:card")
+    )
+    kb.row(InlineKeyboardButton(text="👤 نام صاحب کارت", callback_data="adm:shop:set:holder"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت",        callback_data="adm:main"))
     return kb.as_markup()
 
 
