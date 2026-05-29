@@ -1,19 +1,18 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Enum, BigInteger
+from sqlalchemy import (Column, Integer, BigInteger, String, Boolean,
+                        DateTime, ForeignKey, Enum as SAEnum, Date)
 from sqlalchemy.orm import DeclarativeBase, relationship
 from datetime import datetime
 import enum
 
-class Base(DeclarativeBase):
-    pass
+class Base(DeclarativeBase): pass
 
-class BookingStatus(str, enum.Enum):
+class BookingStatus(enum.Enum):
     PENDING   = "pending"
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     DONE      = "done"
 
-class PaymentStatus(str, enum.Enum):
-    PENDING   = "pending"
+class PaymentStatus(enum.Enum):
     SUBMITTED = "submitted"
     CONFIRMED = "confirmed"
     REJECTED  = "rejected"
@@ -21,11 +20,11 @@ class PaymentStatus(str, enum.Enum):
 class User(Base):
     __tablename__ = "users"
     id         = Column(BigInteger, primary_key=True)
-    full_name  = Column(String(120))
-    first_name = Column(String(60))
-    last_name  = Column(String(60))
-    phone      = Column(String(20))
-    username   = Column(String(80))
+    full_name  = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)   # legacy
+    last_name  = Column(String, nullable=True)   # legacy
+    phone      = Column(String, nullable=True)
+    username   = Column(String, nullable=True)
     registered = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     bookings   = relationship("Booking", back_populates="user")
@@ -33,47 +32,44 @@ class User(Base):
 class Service(Base):
     __tablename__ = "services"
     id        = Column(Integer, primary_key=True, autoincrement=True)
-    name      = Column(String(100), nullable=False)
-    price     = Column(Integer, nullable=False)
+    name      = Column(String, nullable=False)
+    price     = Column(Integer, default=0)
     duration  = Column(Integer, default=30)
     is_active = Column(Boolean, default=True)
     bookings  = relationship("Booking", back_populates="service")
 
 class TimeSlot(Base):
-    __tablename__ = "timeslots"
+    __tablename__ = "time_slots"
     id        = Column(Integer, primary_key=True, autoincrement=True)
-    date      = Column(String(10), nullable=False)   # YYYY-MM-DD
-    time      = Column(String(5),  nullable=False)   # HH:MM
+    date      = Column(String, nullable=False)
+    time      = Column(String, nullable=False)
     is_booked = Column(Boolean, default=False)
-    booking   = relationship("Booking", back_populates="slot", uselist=False)
-
-class HolidayDate(Base):
-    __tablename__ = "holidays"
-    id    = Column(Integer, primary_key=True, autoincrement=True)
-    date  = Column(String(10), nullable=False, unique=True)  # YYYY-MM-DD
-    label = Column(String(100), default="تعطیل")
+    bookings  = relationship("Booking", back_populates="slot")
 
 class Booking(Base):
     __tablename__ = "bookings"
     id         = Column(Integer, primary_key=True, autoincrement=True)
     user_id    = Column(BigInteger, ForeignKey("users.id"))
     service_id = Column(Integer, ForeignKey("services.id"))
-    slot_id    = Column(Integer, ForeignKey("timeslots.id"))
-    status     = Column(Enum(BookingStatus), default=BookingStatus.PENDING)
-    note       = Column(Text)
+    slot_id    = Column(Integer, ForeignKey("time_slots.id"))
+    status     = Column(SAEnum(BookingStatus), default=BookingStatus.PENDING)
     created_at = Column(DateTime, default=datetime.utcnow)
     user       = relationship("User", back_populates="bookings")
     service    = relationship("Service", back_populates="bookings")
-    slot       = relationship("TimeSlot", back_populates="booking")
-    payment    = relationship("Payment", back_populates="booking", uselist=False)
+    slot       = relationship("TimeSlot", back_populates="bookings")
+    payments   = relationship("Payment", back_populates="booking")
 
 class Payment(Base):
     __tablename__ = "payments"
     id           = Column(Integer, primary_key=True, autoincrement=True)
     booking_id   = Column(Integer, ForeignKey("bookings.id"))
-    amount       = Column(Integer)
-    status       = Column(Enum(PaymentStatus), default=PaymentStatus.PENDING)
-    receipt_file = Column(String(200))
-    note         = Column(Text)
+    status       = Column(SAEnum(PaymentStatus), default=PaymentStatus.SUBMITTED)
+    receipt_file = Column(String, nullable=True)
     created_at   = Column(DateTime, default=datetime.utcnow)
-    booking      = relationship("Booking", back_populates="payment")
+    booking      = relationship("Booking", back_populates="payments")
+
+class HolidayDate(Base):
+    __tablename__ = "holiday_dates"
+    id    = Column(Integer, primary_key=True, autoincrement=True)
+    date  = Column(String, nullable=False, unique=True)
+    label = Column(String, nullable=True)
