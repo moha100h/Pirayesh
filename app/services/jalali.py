@@ -1,39 +1,28 @@
 import jdatetime
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 
-_WEEKDAYS = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یکشنبه"]
+WEEKDAYS_FA = {0:"دوشنبه",1:"سه‌شنبه",2:"چهارشنبه",3:"پنج‌شنبه",4:"جمعه",5:"شنبه",6:"یکشنبه"}
 
-def to_jalali(dt) -> str:
-    """datetime یا date → رشته شمسی"""
-    try:
-        if isinstance(dt, datetime):
-            jd = jdatetime.datetime.fromgregorian(datetime=dt)
-        else:
-            jd = jdatetime.date.fromgregorian(date=dt)
-        return f"{jd.year}/{jd.month:02d}/{jd.day:02d}"
-    except Exception:
-        return str(dt)
+def to_jalali(d) -> str:
+    """YYYY-MM-DD string → شمسی مختصر مثل ۱۴۰۵/۰۳/۰۸"""
+    if isinstance(d, str): d = date.fromisoformat(d)
+    jd = jdatetime.date.fromgregorian(date=d)
+    return f"{jd.year}/{jd.month:02d}/{jd.day:02d}"
 
-def to_jalali_full(dt) -> str:
-    """با نام روز هفته: شنبه ۱۴۰۵/۰۳/۰۸"""
-    try:
-        if isinstance(dt, str):
-            dt = date.fromisoformat(dt)
-        if isinstance(dt, datetime):
-            d = dt.date()
-        else:
-            d = dt
-        jd = jdatetime.date.fromgregorian(date=d)
-        wd = _WEEKDAYS[d.weekday()]
-        return f"{wd} {jd.year}/{jd.month:02d}/{jd.day:02d}"
-    except Exception:
-        return str(dt)
+def to_jalali_full(d) -> str:
+    """YYYY-MM-DD string → شنبه ۸ خرداد"""
+    if isinstance(d, str): d = date.fromisoformat(d)
+    jd = jdatetime.date.fromgregorian(date=d)
+    months = ["","فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور",
+              "مهر","آبان","آذر","دی","بهمن","اسفند"]
+    wd = WEEKDAYS_FA.get(d.weekday(), "")
+    return f"{wd} {jd.day} {months[jd.month]}"
 
-def next_7_days() -> list:
-    """لیست ۷ روز آینده به فرمت YYYY-MM-DD"""
+def next_3_days() -> list:
+    """۳ روز آینده (نه امروز) به فرمت YYYY-MM-DD"""
     today = date.today()
-    return [(today + timedelta(days=i)).isoformat() for i in range(1, 8)]
+    return [(today + timedelta(days=i)).isoformat() for i in range(1, 4)]
 
-def fmt_price(n) -> str:
-    try: return f"{int(n):,} تومان"
-    except: return str(n)
+def fmt_price(p) -> str:
+    try: return f"{int(p):,} تومان"
+    except: return str(p)
