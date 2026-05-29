@@ -7,11 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from app.db.models import (Booking, BookingStatus, Service, TimeSlot,
-                            Payment, PaymentStatus)
+                            Payment, PaymentStatus, HolidayDate)
 from app.keyboards.menus import (
     admin_main_kb, admin_booking_kb, admin_payment_kb,
-    admin_settings_kb, admin_shop_info_kb, back_btn
+    admin_payment_notify_kb, admin_settings_kb,
+    admin_shop_info_kb, admin_holidays_kb, back_btn
 )
+from app.services.jalali import to_jalali_full, fmt_price
 from app.config import config
 import os
 
@@ -19,8 +21,7 @@ router = Router()
 
 class IsAdmin(Filter):
     async def __call__(self, event) -> bool:
-        uid = getattr(event.from_user, "id", None)
-        return uid in config.ADMIN_IDS
+        return getattr(event.from_user, "id", None) in config.ADMIN_IDS
 
 class ServiceFSM(StatesGroup):
     name = State(); price = State(); duration = State()
@@ -31,10 +32,13 @@ class SlotFSM(StatesGroup):
 class ShopFSM(StatesGroup):
     value = State()
 
+class HolidayFSM(StatesGroup):
+    date = State(); label = State()
+
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
-def _update_env(key: str, value: str):
+def _update_env(key, value):
     env_path = ".env"
     try:
         lines = open(env_path).readlines() if os.path.exists(env_path) else []
@@ -44,10 +48,8 @@ def _update_env(key: str, value: str):
                 new_lines.append(f"{key}={value}\n"); found = True
             else:
                 new_lines.append(line)
-        if not found:
-            new_lines.append(f"{key}={value}\n")
-        with open(env_path, "w") as f:
-            f.writelines(new_lines)
+        if not found: new_lines.append(f"{key}={value}\n")
+        open(env_path, "w").writelines(new_lines)
     except: pass
 
 # ── پنل اصلی ─────────────────────────────────────────────────────────────────
@@ -74,7 +76,8 @@ async def adm_bookings_today(cb: CallbackQuery, session: AsyncSession):
     )
     bookings = r.scalars().all()
     if not bookings:
-        await cb.message.edit_text("📋 امروز نوبتی ندارید.", reply_markup=back_btn("adm:main"))
+        await cb.message.edit_text(f"📋 امروز ({to_jalali_full(today)}) نوبتی ندارید.",
+                                    reply_markup=back_btn("adm:main"))
         await cb.answer(); return
     S = {"pending":"⏳","confirmed":"✅","cancelled":"❌","done":"💈"}
     kb = InlineKeyboardBuilder()
@@ -86,11 +89,10 @@ async def adm_bookings_today(cb: CallbackQuery, session: AsyncSession):
             callback_data=f"adm:bk:view:{b.id}"
         ))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
-    await cb.message.edit_text(f"📋 <b>نوبت‌های امروز ({today})</b>",
+    await cb.message.edit_text(f"📋 <b>نوبت‌های امروز — {to_jalali_full(today)}</b>",
                                 reply_markup=kb.as_markup(), parse_mode="HTML")
     await cb.answer()
 
-# ── همه نوبت‌ها ───────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:bookings:all")
 async def adm_bookings_all(cb: CallbackQuery, session: AsyncSession):
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -109,18 +111,16 @@ async def adm_bookings_all(cb: CallbackQuery, session: AsyncSession):
     for b in bookings:
         sv = b.status.value if hasattr(b.status,"value") else b.status
         name = b.user.full_name if b.user else "—"
-        date_str = b.slot.date if b.slot else "—"
+        date_str = to_jalali_full(b.slot.date) if b.slot else "—"
         time_str = b.slot.time if b.slot else "—"
         kb.row(InlineKeyboardButton(
             text=f"{S.get(sv,'📋')} {date_str} {time_str} — {name}",
             callback_data=f"adm:bk:view:{b.id}"
         ))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
-    await cb.message.edit_text("📋 <b>آخرین ۲۰ نوبت</b>",
-                                reply_markup=kb.as_markup(), parse_mode="HTML")
+    await cb.message.edit_text("📋 <b>آخرین ۲۰ نوبت</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
     await cb.answer()
 
-# ── جزئیات نوبت ──────────────────────────────────────────────────────────────
 @router.callback_query(F.data.startswith("adm:bk:view:"))
 async def adm_bk_view(cb: CallbackQuery, session: AsyncSession):
     bk_id = int(cb.data.split(":")[3])
@@ -132,11 +132,15 @@ async def adm_bk_view(cb: CallbackQuery, session: AsyncSession):
     if not bk: await cb.answer("یافت نشد!", show_alert=True); return
     sv = bk.status.value if hasattr(bk.status,"value") else bk.status
     S = {"pending":"⏳ در انتظار","confirmed":"✅ تایید","cancelled":"❌ لغو","done":"💈 انجام شد"}
+    u = bk.user
     text = (
         f"📋 <b>نوبت #{bk.id}</b>\n"
-        f"👤 {bk.user.full_name if bk.user else '—'} (@{bk.user.username or '—' if bk.user else '—'})\n"
-        f"✂️ {bk.service.name}  |  {bk.service.price:,} ت\n"
-        f"📅 {bk.slot.date}  🕐 {bk.slot.time}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {u.full_name if u else '—'}\n"
+        f"📞 {u.phone if u else '—'}\n"
+        f"✂️ {bk.service.name}  |  {fmt_price(bk.service.price)}\n"
+        f"📅 {to_jalali_full(bk.slot.date)}  🕐 {bk.slot.time}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"وضعیت: {S.get(sv,sv)}"
     )
     await cb.message.edit_text(text, reply_markup=admin_booking_kb(bk.id, sv), parse_mode="HTML")
@@ -153,7 +157,8 @@ async def adm_bk_confirm(cb: CallbackQuery, session: AsyncSession):
         await cb.bot.send_message(bk.user_id,
             "✅ <b>نوبت شما تایید شد!</b>\nمنتظرتان هستیم 💈", parse_mode="HTML")
     except: pass
-    await cb.message.edit_text(f"✅ نوبت #{bk_id} تایید شد.")
+    try: await cb.message.edit_text(f"✅ نوبت #{bk_id} تایید شد.")
+    except: await cb.message.edit_caption(f"✅ نوبت #{bk_id} تایید شد.")
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:bk:cancel:"))
@@ -171,7 +176,8 @@ async def adm_bk_cancel(cb: CallbackQuery, session: AsyncSession):
         await cb.bot.send_message(bk.user_id,
             "❌ <b>نوبت شما لغو شد.</b>\nبرای نوبت جدید /start را بزنید.", parse_mode="HTML")
     except: pass
-    await cb.message.edit_text(f"❌ نوبت #{bk_id} لغو شد.")
+    try: await cb.message.edit_text(f"❌ نوبت #{bk_id} لغو شد.")
+    except: await cb.message.edit_caption(f"❌ نوبت #{bk_id} لغو شد.")
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:bk:done:"))
@@ -181,7 +187,8 @@ async def adm_bk_done(cb: CallbackQuery, session: AsyncSession):
     if not bk: await cb.answer("یافت نشد!", show_alert=True); return
     bk.status = BookingStatus.DONE
     await session.commit()
-    await cb.message.edit_text(f"💈 نوبت #{bk_id} انجام شد.")
+    try: await cb.message.edit_text(f"💈 نوبت #{bk_id} انجام شد.")
+    except: await cb.message.edit_caption(f"💈 نوبت #{bk_id} انجام شد.")
     await cb.answer()
 
 # ── پرداخت‌ها ─────────────────────────────────────────────────────────────────
@@ -210,16 +217,24 @@ async def adm_pay_view(cb: CallbackQuery, session: AsyncSession):
     pay_id = int(cb.data.split(":")[3])
     r = await session.execute(
         select(Payment).where(Payment.id == pay_id)
-        .options(selectinload(Payment.booking).selectinload(Booking.user))
+        .options(selectinload(Payment.booking).selectinload(Booking.user),
+                 selectinload(Payment.booking).selectinload(Booking.service),
+                 selectinload(Payment.booking).selectinload(Booking.slot))
     )
     pay = r.scalar_one_or_none()
     if not pay: await cb.answer("یافت نشد!", show_alert=True); return
-    name = pay.booking.user.full_name if pay.booking and pay.booking.user else "—"
-    await cb.message.answer_photo(
-        photo=pay.receipt_file,
-        caption=f"💳 رسید از {name} — نوبت #{pay.booking_id}",
-        reply_markup=admin_payment_kb(pay.id)
+    bk = pay.booking
+    u = bk.user if bk else None
+    text = (
+        f"💳 <b>پرداخت #{pay.id}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {u.full_name if u else '—'}\n"
+        f"📞 {u.phone if u else '—'}\n"
+        f"✂️ {bk.service.name if bk else '—'}\n"
+        f"📅 {to_jalali_full(bk.slot.date) if bk else '—'}  🕐 {bk.slot.time if bk else '—'}\n"
+        f"💰 {fmt_price(bk.service.price) if bk else '—'}"
     )
+    await cb.message.edit_text(text, reply_markup=admin_payment_notify_kb(pay.id), parse_mode="HTML")
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:pay:confirm:"))
@@ -235,9 +250,10 @@ async def adm_pay_confirm(cb: CallbackQuery, session: AsyncSession):
     await session.commit()
     try:
         await cb.bot.send_message(pay.booking.user_id,
-            "✅ <b>پرداخت تایید شد!</b>\nنوبتتان قطعی است 💈", parse_mode="HTML")
+            "✅ <b>پرداخت شما تایید شد!</b>\nنوبتتان قطعی است. منتظرتان هستیم 💈", parse_mode="HTML")
     except: pass
-    await cb.message.edit_caption("✅ پرداخت تایید شد.")
+    try: await cb.message.edit_text("✅ پرداخت تایید شد.")
+    except: await cb.message.edit_caption("✅ پرداخت تایید شد.")
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:pay:reject:"))
@@ -252,9 +268,10 @@ async def adm_pay_reject(cb: CallbackQuery, session: AsyncSession):
     await session.commit()
     try:
         await cb.bot.send_message(pay.booking.user_id,
-            "❌ <b>رسید رد شد.</b>\nمجدداً ارسال کنید یا تماس بگیرید.", parse_mode="HTML")
+            "❌ <b>رسید پرداخت رد شد.</b>\nلطفاً مجدداً ارسال کنید یا با آرایشگاه تماس بگیرید.", parse_mode="HTML")
     except: pass
-    await cb.message.edit_caption("❌ پرداخت رد شد.")
+    try: await cb.message.edit_text("❌ پرداخت رد شد.")
+    except: await cb.message.edit_caption("❌ پرداخت رد شد.")
     await cb.answer()
 
 # ── خدمات ─────────────────────────────────────────────────────────────────────
@@ -308,17 +325,15 @@ async def svc_duration(msg: Message, state: FSMContext, session: AsyncSession):
     except: await msg.answer("❌ عدد وارد کنید:"); return
     d = await state.get_data()
     svc = Service(name=d["name"], price=d["price"], duration=dur)
-    session.add(svc)
-    await session.commit()
+    session.add(svc); await session.commit()
     await state.clear()
-    await msg.answer(f"✅ خدمت <b>{svc.name}</b> اضافه شد.",
-                     reply_markup=back_btn("adm:services"), parse_mode="HTML")
+    await msg.answer(f"✅ خدمت <b>{svc.name}</b> اضافه شد.", reply_markup=back_btn("adm:services"), parse_mode="HTML")
 
 # ── زمان‌بندی ─────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:slots")
 async def adm_slots(cb: CallbackQuery, state: FSMContext):
     await state.set_state(SlotFSM.date)
-    await cb.message.edit_text("📅 تاریخ (مثال: 2026-06-01):", reply_markup=back_btn("adm:main"))
+    await cb.message.edit_text("📅 تاریخ (YYYY-MM-DD مثال: 2026-06-01):", reply_markup=back_btn("adm:main"))
     await cb.answer()
 
 @router.message(SlotFSM.date)
@@ -340,9 +355,52 @@ async def slot_times(msg: Message, state: FSMContext, session: AsyncSession):
             session.add(TimeSlot(date=d["date"], time=t)); added += 1
     await session.commit()
     await state.clear()
-    await msg.answer(f"✅ {added} زمان برای {d['date']} اضافه شد.", reply_markup=back_btn("adm:slots"))
+    await msg.answer(f"✅ {added} زمان برای {to_jalali_full(d['date'])} اضافه شد.", reply_markup=back_btn("adm:slots"))
 
-# ── تنظیمات — toggle ──────────────────────────────────────────────────────────
+# ── روزهای تعطیل ─────────────────────────────────────────────────────────────
+@router.callback_query(F.data == "adm:holidays")
+async def adm_holidays(cb: CallbackQuery, session: AsyncSession):
+    r = await session.execute(select(HolidayDate).order_by(HolidayDate.date))
+    holidays = r.scalars().all()
+    text = "🎌 <b>روزهای تعطیل</b>\n<i>این روزها در نوبت‌گیری نمایش داده نمی‌شوند</i>"
+    await cb.message.edit_text(text, reply_markup=admin_holidays_kb(holidays), parse_mode="HTML")
+    await cb.answer()
+
+@router.callback_query(F.data == "adm:hol:new")
+async def adm_hol_new(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(HolidayFSM.date)
+    await cb.message.edit_text(
+        "📅 تاریخ تعطیلی (YYYY-MM-DD مثال: 2026-06-05):",
+        reply_markup=back_btn("adm:holidays")
+    )
+    await cb.answer()
+
+@router.message(HolidayFSM.date)
+async def hol_date(msg: Message, state: FSMContext):
+    await state.update_data(date=msg.text.strip())
+    await state.set_state(HolidayFSM.label)
+    await msg.answer("🏷 عنوان تعطیلی (مثال: عید نوروز):")
+
+@router.message(HolidayFSM.label)
+async def hol_label(msg: Message, state: FSMContext, session: AsyncSession):
+    d = await state.get_data()
+    h = HolidayDate(date=d["date"], label=msg.text.strip())
+    session.add(h); await session.commit()
+    await state.clear()
+    await msg.answer(
+        f"✅ {to_jalali_full(d['date'])} — <b>{h.label}</b> به تعطیلات اضافه شد.",
+        reply_markup=back_btn("adm:holidays"), parse_mode="HTML"
+    )
+
+@router.callback_query(F.data.startswith("adm:hol:del:"))
+async def adm_hol_del(cb: CallbackQuery, session: AsyncSession):
+    hol_id = int(cb.data.split(":")[3])
+    h = await session.get(HolidayDate, hol_id)
+    if not h: await cb.answer("یافت نشد!", show_alert=True); return
+    await session.delete(h); await session.commit()
+    await adm_holidays(cb, session)
+
+# ── تنظیمات ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:settings")
 async def adm_settings(cb: CallbackQuery):
     await cb.message.edit_text(
@@ -366,7 +424,6 @@ async def adm_toggle(cb: CallbackQuery):
         _update_env("SERVICES_VISIBLE", str(config.SERVICES_VISIBLE).lower())
     await adm_settings(cb)
 
-# ── اطلاعات آرایشگاه ─────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:shopinfo")
 async def adm_shopinfo(cb: CallbackQuery):
     text = (
@@ -383,14 +440,10 @@ async def adm_shopinfo(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("adm:shop:set:"))
 async def adm_shop_set(cb: CallbackQuery, state: FSMContext):
     field = cb.data.split(":")[3]
-    labels = {"name":"نام آرایشگاه","phone":"شماره تلفن","address":"آدرس",
-              "card":"شماره کارت","holder":"نام صاحب کارت"}
+    labels = {"name":"نام آرایشگاه","phone":"شماره تلفن","address":"آدرس","card":"شماره کارت","holder":"نام صاحب کارت"}
     await state.update_data(field=field)
     await state.set_state(ShopFSM.value)
-    await cb.message.edit_text(
-        f"✏️ {labels.get(field, field)} جدید را وارد کنید:",
-        reply_markup=back_btn("adm:shopinfo")
-    )
+    await cb.message.edit_text(f"✏️ {labels.get(field, field)} جدید:", reply_markup=back_btn("adm:shopinfo"))
     await cb.answer()
 
 @router.message(ShopFSM.value)
@@ -411,8 +464,13 @@ async def adm_stats(cb: CallbackQuery, session: AsyncSession):
     total   = (await session.execute(select(func.count(Booking.id)))).scalar() or 0
     pending = (await session.execute(select(func.count(Booking.id)).where(Booking.status == BookingStatus.PENDING))).scalar() or 0
     done    = (await session.execute(select(func.count(Booking.id)).where(Booking.status == BookingStatus.DONE))).scalar() or 0
+    users   = (await session.execute(select(func.count(HolidayDate.id)))).scalar() or 0
     await cb.message.edit_text(
-        f"📊 <b>آمار</b>\n\nکل نوبت‌ها: <b>{total}</b>\nدر انتظار: <b>{pending}</b>\nانجام شده: <b>{done}</b>",
+        f"📊 <b>آمار</b>\n\n"
+        f"کل نوبت‌ها: <b>{total}</b>\n"
+        f"در انتظار: <b>{pending}</b>\n"
+        f"انجام شده: <b>{done}</b>\n"
+        f"روزهای تعطیل ثبت‌شده: <b>{users}</b>",
         reply_markup=back_btn("adm:main"), parse_mode="HTML"
     )
     await cb.answer()
