@@ -1,23 +1,19 @@
 import os
-from dataclasses import dataclass, field
+from dotenv import load_dotenv
 
-@dataclass
+load_dotenv()
+
 class Config:
-    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-    ADMIN_IDS: list = field(default_factory=lambda: [
-        int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
-    ])
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///pirayesh.db")
-
-    BOOKING_ENABLED:  bool = os.getenv("BOOKING_ENABLED",  "true").lower() == "true"
-    PAYMENT_ENABLED:  bool = os.getenv("PAYMENT_ENABLED",  "true").lower() == "true"
-    SERVICES_VISIBLE: bool = os.getenv("SERVICES_VISIBLE", "true").lower() == "true"
-
-    CARD_NUMBER:  str = os.getenv("CARD_NUMBER",  "")
-    CARD_HOLDER:  str = os.getenv("CARD_HOLDER",  "")
-
-    SHOP_NAME:    str = os.getenv("SHOP_NAME",    "پیرایش")
-    SHOP_ADDRESS: str = os.getenv("SHOP_ADDRESS", "")
-    SHOP_PHONE:   str = os.getenv("SHOP_PHONE",   "")
+    BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
+    ADMIN_IDS        = list(map(int, os.getenv("ADMIN_IDS", "0").split(",")))
+    DATABASE_URL     = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/data/pirayesh.db")
+    BOOKING_ENABLED  = os.getenv("BOOKING_ENABLED",  "true").lower() == "true"
+    PAYMENT_ENABLED  = os.getenv("PAYMENT_ENABLED",  "true").lower() == "true"
+    SERVICES_VISIBLE = os.getenv("SERVICES_VISIBLE", "true").lower() == "true"
+    CARD_NUMBER      = os.getenv("CARD_NUMBER", "")
+    CARD_HOLDER      = os.getenv("CARD_HOLDER", "")
+    SHOP_NAME        = os.getenv("SHOP_NAME",    "پیرایش")
+    SHOP_ADDRESS     = os.getenv("SHOP_ADDRESS", "")
+    SHOP_PHONE       = os.getenv("SHOP_PHONE",   "")
 
 config = Config()
