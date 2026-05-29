@@ -1,8 +1,7 @@
-version: "3.9"
 services:
   bot:
     build: .
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./pirayesh.db:/app/pirayesh.db
+      - ./data:/app/data
