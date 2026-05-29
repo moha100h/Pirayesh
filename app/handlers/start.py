@@ -1,111 +1,121 @@
 from aiogram import Router, F
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import User
-from app.keyboards.menus import main_menu, back_btn
+from app.keyboards.menus import main_menu
 from app.config import config
 
 router = Router()
 
-class RegisterFSM(StatesGroup):
-    first_name = State()
-    last_name  = State()
-    phone      = State()
+class RegFSM(StatesGroup):
+    full_name = State()
+    phone     = State()
 
 @router.message(CommandStart())
 async def cmd_start(msg: Message, session: AsyncSession, state: FSMContext):
-    u = await session.get(User, msg.from_user.id)
-    if not u:
-        u = User(id=msg.from_user.id, username=msg.from_user.username)
-        session.add(u)
-        await session.commit()
-    if not u.registered:
-        await state.set_state(RegisterFSM.first_name)
+    await state.clear()
+    user = await session.get(User, msg.from_user.id)
+    if user and user.registered:
+        is_admin = msg.from_user.id in config.ADMIN_IDS
         await msg.answer(
-            f"✂️ به ربات <b>{config.SHOP_NAME}</b> خوش آمدید!\n\n"
-            f"برای شروع، لطفاً اطلاعات خود را وارد کنید.\n\n"
-            f"👤 <b>نام:</b>",
-            parse_mode="HTML",
-            reply_markup=ReplyKeyboardRemove()
+            f"👋 خوش اومدی <b>{user.full_name}</b>!",
+            reply_markup=main_menu(is_admin=is_admin,
+                                   booking=config.BOOKING_ENABLED,
+                                   services=config.SERVICES_VISIBLE),
+            parse_mode="HTML"
         )
         return
-    await _show_main(msg, session)
 
-@router.message(RegisterFSM.first_name)
-async def reg_first(msg: Message, state: FSMContext):
-    await state.update_data(first_name=msg.text.strip())
-    await state.set_state(RegisterFSM.last_name)
-    await msg.answer("👤 <b>نام خانوادگی:</b>", parse_mode="HTML")
+    # ذخیره شماره تلگرام (username یا id)
+    tg_username = msg.from_user.username or str(msg.from_user.id)
+    await state.update_data(tg_username=tg_username, tg_id=msg.from_user.id)
 
-@router.message(RegisterFSM.last_name)
-async def reg_last(msg: Message, state: FSMContext):
-    await state.update_data(last_name=msg.text.strip())
-    await state.set_state(RegisterFSM.phone)
     await msg.answer(
-        "📞 <b>شماره تماس:</b>\n<i>(مثال: 09123456789)</i>",
-        parse_mode="HTML"
+        f"👋 سلام!\n\n"
+        f"📱 شماره تلگرام شما: <code>@{tg_username}</code>\n\n"
+        f"لطفاً <b>نام و نام خانوادگی</b> خود را وارد کنید:\n"
+        f"<i>(مثال: علی رضایی)</i>",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
     )
+    await state.set_state(RegFSM.full_name)
 
-@router.message(RegisterFSM.phone)
-async def reg_phone(msg: Message, state: FSMContext, session: AsyncSession):
-    phone = msg.text.strip()
-    if not phone.startswith("09") or len(phone) != 11 or not phone.isdigit():
-        await msg.answer("❌ شماره تماس معتبر نیست. مثال: <code>09123456789</code>", parse_mode="HTML")
-        return
+@router.message(RegFSM.full_name)
+async def reg_full_name(msg: Message, state: FSMContext):
+    name = msg.text.strip()
+    if len(name) < 3:
+        await msg.answer("❌ نام باید حداقل ۳ حرف باشد. دوباره وارد کنید:"); return
+    await state.update_data(full_name=name)
+
+    # دکمه اشتراک‌گذاری شماره
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 اشتراک‌گذاری شماره", request_contact=True)]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await msg.answer(
+        f"✅ <b>{name}</b>\n\n"
+        f"حالا شماره تماس خود را وارد کنید یا از دکمه زیر استفاده کنید:",
+        reply_markup=kb, parse_mode="HTML"
+    )
+    await state.set_state(RegFSM.phone)
+
+@router.message(RegFSM.phone, F.contact)
+async def reg_phone_contact(msg: Message, state: FSMContext, session: AsyncSession):
+    phone = msg.contact.phone_number
+    if not phone.startswith("+"): phone = "+" + phone
+    await _finish_reg(msg, state, session, phone)
+
+@router.message(RegFSM.phone, F.text)
+async def reg_phone_text(msg: Message, state: FSMContext, session: AsyncSession):
+    phone = msg.text.strip().replace(" ", "")
+    if not (phone.startswith("09") or phone.startswith("+98")) or len(phone) < 10:
+        await msg.answer("❌ شماره معتبر نیست. مثال: 09123456789"); return
+    await _finish_reg(msg, state, session, phone)
+
+async def _finish_reg(msg: Message, state: FSMContext, session: AsyncSession, phone: str):
     d = await state.get_data()
-    u = await session.get(User, msg.from_user.id)
-    u.first_name = d["first_name"]
-    u.last_name  = d["last_name"]
-    u.full_name  = f"{d['first_name']} {d['last_name']}"
-    u.phone      = phone
-    u.registered = True
+    full_name   = d["full_name"]
+    tg_username = d.get("tg_username", "")
+
+    # ذخیره یا آپدیت کاربر
+    user = await session.get(User, msg.from_user.id)
+    if not user:
+        user = User(id=msg.from_user.id)
+        session.add(user)
+    user.full_name   = full_name
+    user.phone       = phone
+    user.username    = tg_username
+    user.registered  = True
     await session.commit()
     await state.clear()
-    await msg.answer(
-        f"✅ <b>ثبت‌نام با موفقیت انجام شد!</b>\n\n"
-        f"خوش آمدید، <b>{u.full_name}</b> عزیز 🙏",
-        parse_mode="HTML"
-    )
-    await _show_main(msg, session)
 
-async def _show_main(msg: Message, session: AsyncSession):
     is_admin = msg.from_user.id in config.ADMIN_IDS
     await msg.answer(
-        f"✂️ <b>{config.SHOP_NAME}</b>\nاز منوی زیر انتخاب کنید:",
-        reply_markup=main_menu(
-            is_admin=is_admin,
-            booking=config.BOOKING_ENABLED,
-            services=config.SERVICES_VISIBLE,
-            payment=config.PAYMENT_ENABLED,
-        ),
+        f"🎉 <b>ثبت‌نام با موفقیت انجام شد!</b>\n\n"
+        f"👤 نام: <b>{full_name}</b>\n"
+        f"📞 شماره: <b>{phone}</b>\n"
+        f"📱 تلگرام: <code>@{tg_username}</code>\n\n"
+        f"از منوی زیر استفاده کنید 👇",
+        reply_markup=main_menu(is_admin=is_admin,
+                               booking=config.BOOKING_ENABLED,
+                               services=config.SERVICES_VISIBLE),
         parse_mode="HTML"
     )
 
+# ── nav:main callback ─────────────────────────────────────────────────────────
 @router.callback_query(F.data == "nav:main")
-async def nav_main(cb: CallbackQuery, session: AsyncSession):
+async def nav_main(cb, session: AsyncSession):
+    user = await session.get(User, cb.from_user.id)
     is_admin = cb.from_user.id in config.ADMIN_IDS
-    try: await cb.message.delete()
-    except: pass
-    await cb.message.answer(
-        f"✂️ <b>{config.SHOP_NAME}</b> — منوی اصلی",
-        reply_markup=main_menu(
-            is_admin=is_admin,
-            booking=config.BOOKING_ENABLED,
-            services=config.SERVICES_VISIBLE,
-            payment=config.PAYMENT_ENABLED,
-        ),
-        parse_mode="HTML"
+    await cb.message.delete()
+    await cb.bot.send_message(
+        cb.from_user.id,
+        "🏠 منوی اصلی",
+        reply_markup=main_menu(is_admin=is_admin,
+                               booking=config.BOOKING_ENABLED,
+                               services=config.SERVICES_VISIBLE)
     )
     await cb.answer()
-
-@router.message(F.text == "📞 اطلاعات آرایشگاه")
-async def shop_info(msg: Message):
-    text = (
-        f"🏪 <b>{config.SHOP_NAME}</b>\n"
-        f"📍 {config.SHOP_ADDRESS or '—'}\n"
-        f"📞 {config.SHOP_PHONE or '—'}"
-    )
-    await msg.answer(text, parse_mode="HTML")
