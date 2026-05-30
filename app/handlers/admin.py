@@ -13,10 +13,10 @@ from app.db.models import (Booking, BookingStatus, Service, TimeSlot,
 from app.keyboards.menus import (
     admin_main_kb, admin_booking_kb,
     admin_payment_notify_kb, admin_settings_kb,
-    admin_shop_info_kb, back_btn
+    admin_shop_info_kb, admin_holidays_kb, back_btn
 )
 from app.services.jalali import (
-    to_jalali_full, to_jalali_with_year, to_jalali,
+    to_jalali_full, to_jalali_with_year,
     fmt_price, next_n_days, today_tehran, validate_time
 )
 from app.config import config
@@ -71,104 +71,172 @@ async def adm_main(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text("⚙️ <b>پنل مدیریت</b>", reply_markup=admin_main_kb(), parse_mode="HTML")
     await cb.answer()
 
-# ── نوبت‌های امروز ────────────────────────────────────────────────────────────
-@router.callback_query(F.data == "adm:bookings:today")
-async def adm_bookings_today(cb: CallbackQuery, session: AsyncSession):
-    today = today_tehran().isoformat()
-    r = await session.execute(
-        select(Booking).join(Booking.slot).where(TimeSlot.date == today)
-        .options(selectinload(Booking.user), selectinload(Booking.service), selectinload(Booking.slot))
-        .order_by(TimeSlot.time)
-    )
-    bookings = r.scalars().all()
-    if not bookings:
-        await cb.message.edit_text(
-            f"📋 امروز <b>{to_jalali_with_year(today)}</b> نوبتی ندارید.",
-            reply_markup=back_btn("adm:main"), parse_mode="HTML"
-        )
-        await cb.answer(); return
-    S = {"pending":"⏳","confirmed":"✅","cancelled":"❌","done":"💈"}
+# ══════════════════════════════════════════════════════════════════════════════
+# ── تایید/رد نوبت‌ها — مسیر: خدمات ← رزروها ← جزئیات ────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "adm:review")
+async def adm_review(cb: CallbackQuery, session: AsyncSession):
+    """لیست خدمات با تعداد نوبت pending"""
+    r = await session.execute(select(Service).order_by(Service.id))
+    services = r.scalars().all()
     kb = InlineKeyboardBuilder()
-    for b in bookings:
-        sv = b.status.value if hasattr(b.status,"value") else b.status
-        name = b.user.full_name if b.user else "—"
+    for s in services:
+        cnt = (await session.execute(
+            select(func.count(Booking.id)).where(
+                Booking.service_id == s.id,
+                Booking.status == BookingStatus.PENDING
+            )
+        )).scalar() or 0
+        icon = "🟢" if s.is_active else "🔴"
+        badge = f" ⏳{cnt}" if cnt > 0 else ""
         kb.row(InlineKeyboardButton(
-            text=f"{S.get(sv,'📋')} {b.slot.time} — {name} — {b.service.name}",
-            callback_data=f"adm:bk:view:{b.id}"
+            text=f"{icon} {s.name}{badge}",
+            callback_data=f"adm:rev:svc:{s.id}"
         ))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
     await cb.message.edit_text(
-        f"📋 <b>نوبت‌های امروز — {to_jalali_with_year(today)}</b>",
+        "✅ <b>تایید / رد نوبت‌ها</b>\n<i>خدمت مورد نظر را انتخاب کنید:</i>",
         reply_markup=kb.as_markup(), parse_mode="HTML"
     )
     await cb.answer()
 
-@router.callback_query(F.data == "adm:bookings:all")
-async def adm_bookings_all(cb: CallbackQuery, session: AsyncSession):
+@router.callback_query(F.data.startswith("adm:rev:svc:"))
+async def adm_rev_svc(cb: CallbackQuery, session: AsyncSession):
+    """لیست رزروهای pending یک خدمت"""
+    svc_id = int(cb.data.split(":")[3])
+    svc = await session.get(Service, svc_id)
+    if not svc: await cb.answer("یافت نشد!", show_alert=True); return
+
     r = await session.execute(
-        select(Booking)
-        .options(selectinload(Booking.user), selectinload(Booking.service), selectinload(Booking.slot))
-        .order_by(Booking.id.desc()).limit(20)
+        select(Booking).where(
+            Booking.service_id == svc_id,
+            Booking.status == BookingStatus.PENDING
+        )
+        .options(selectinload(Booking.user), selectinload(Booking.slot))
+        .order_by(Booking.created_at)
     )
     bookings = r.scalars().all()
     if not bookings:
-        await cb.message.edit_text("📋 هیچ نوبتی ثبت نشده.", reply_markup=back_btn("adm:main"))
+        await cb.message.edit_text(
+            f"✅ <b>{svc.name}</b>\n\nهیچ نوبت در انتظاری وجود ندارد.",
+            reply_markup=back_btn("adm:review"), parse_mode="HTML"
+        )
         await cb.answer(); return
-    S = {"pending":"⏳","confirmed":"✅","cancelled":"❌","done":"💈"}
+
     kb = InlineKeyboardBuilder()
     for b in bookings:
-        sv = b.status.value if hasattr(b.status,"value") else b.status
         name = b.user.full_name if b.user else "—"
         date_str = to_jalali_full(b.slot.date) if b.slot else "—"
         time_str = b.slot.time if b.slot else "—"
         kb.row(InlineKeyboardButton(
-            text=f"{S.get(sv,'📋')} {date_str} {time_str} — {name}",
-            callback_data=f"adm:bk:view:{b.id}"
+            text=f"⏳ {date_str} {time_str} — {name}",
+            callback_data=f"adm:rev:bk:{b.id}"
         ))
-    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
-    await cb.message.edit_text("📋 <b>آخرین ۲۰ نوبت</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:review"))
+    await cb.message.edit_text(
+        f"⏳ <b>{svc.name}</b> — نوبت‌های در انتظار:",
+        reply_markup=kb.as_markup(), parse_mode="HTML"
+    )
     await cb.answer()
 
-@router.callback_query(F.data.startswith("adm:bk:view:"))
-async def adm_bk_view(cb: CallbackQuery, session: AsyncSession):
+@router.callback_query(F.data.startswith("adm:rev:bk:"))
+async def adm_rev_bk(cb: CallbackQuery, session: AsyncSession):
+    """جزئیات کامل نوبت + تعداد رزرو موفق قبلی"""
     bk_id = int(cb.data.split(":")[3])
     r = await session.execute(
         select(Booking).where(Booking.id == bk_id)
-        .options(selectinload(Booking.user), selectinload(Booking.service), selectinload(Booking.slot))
+        .options(
+            selectinload(Booking.user),
+            selectinload(Booking.service),
+            selectinload(Booking.slot),
+            selectinload(Booking.payments)
+        )
     )
     bk = r.scalar_one_or_none()
     if not bk: await cb.answer("یافت نشد!", show_alert=True); return
-    sv = bk.status.value if hasattr(bk.status,"value") else bk.status
-    S = {"pending":"⏳ در انتظار","confirmed":"✅ تایید","cancelled":"❌ لغو","done":"💈 انجام شد"}
+
     u = bk.user
+    sv = bk.status.value if hasattr(bk.status,"value") else bk.status
+
+    # تعداد رزروهای موفق قبلی این کاربر
+    prev_done = (await session.execute(
+        select(func.count(Booking.id)).where(
+            Booking.user_id == bk.user_id,
+            Booking.status == BookingStatus.DONE,
+            Booking.id != bk.id
+        )
+    )).scalar() or 0
+
+    # آیا رسید پرداخت داره؟
+    has_receipt = any(p.receipt_file for p in bk.payments)
+    pay_type = "💳 آنلاین" if has_receipt else "💵 حضوری"
+
     text = (
         f"📋 <b>نوبت #{bk.id}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 {u.full_name if u else '—'}\n"
-        f"📞 {u.phone if u else '—'}\n"
-        f"📱 @{u.username if u and u.username else '—'}\n"
+        f"👤 <b>{u.full_name if u else '—'}</b>\n"
+        f"📞 ثبت‌نام: {u.phone if u else '—'}\n"
+        f"📱 تماس رزرو: <b>{bk.contact_phone or '—'}</b>\n"
+        f"🆔 @{u.username if u and u.username else '—'}\n"
+        f"🏆 رزرو موفق قبلی: <b>{prev_done} بار</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"✂️ {bk.service.name}  |  {fmt_price(bk.service.price)}\n"
         f"📅 {to_jalali_with_year(bk.slot.date)}\n"
         f"🕐 ساعت: {bk.slot.time}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"وضعیت: {S.get(sv,sv)}"
+        f"💰 پرداخت: {pay_type}\n"
+        f"━━━━━━━━━━━━━━━━━━"
     )
-    await cb.message.edit_text(text, reply_markup=admin_booking_kb(bk.id, sv), parse_mode="HTML")
+    await cb.message.edit_text(
+        text,
+        reply_markup=admin_booking_kb(bk.id, sv, has_receipt=has_receipt),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("adm:bk:receipt:"))
+async def adm_bk_receipt(cb: CallbackQuery, session: AsyncSession):
+    bk_id = int(cb.data.split(":")[3])
+    r = await session.execute(
+        select(Payment).where(Payment.booking_id == bk_id, Payment.receipt_file != None)
+        .order_by(Payment.id.desc())
+    )
+    pay = r.scalars().first()
+    if not pay:
+        await cb.answer("رسیدی یافت نشد!", show_alert=True); return
+    await cb.message.answer_photo(
+        photo=pay.receipt_file,
+        caption=f"🧾 رسید واریز — نوبت #{bk_id}"
+    )
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:bk:confirm:"))
 async def adm_bk_confirm(cb: CallbackQuery, session: AsyncSession):
     bk_id = int(cb.data.split(":")[3])
-    bk = await session.get(Booking, bk_id)
+    r = await session.execute(
+        select(Booking).where(Booking.id == bk_id)
+        .options(selectinload(Booking.service), selectinload(Booking.slot))
+    )
+    bk = r.scalar_one_or_none()
     if not bk: await cb.answer("یافت نشد!", show_alert=True); return
     bk.status = BookingStatus.CONFIRMED
+    # تایید پرداخت آنلاین هم
+    await session.execute(
+        select(Payment).where(Payment.booking_id == bk_id)
+    )
     await session.commit()
     try:
-        await cb.bot.send_message(bk.user_id,
-            "✅ <b>نوبت شما تایید شد!</b>\nمنتظرتان هستیم 💈", parse_mode="HTML")
+        await cb.bot.send_message(
+            bk.user_id,
+            f"✅ <b>نوبت شما تایید شد!</b>\n\n"
+            f"✂️ {bk.service.name}\n"
+            f"📅 {to_jalali_with_year(bk.slot.date)}\n"
+            f"🕐 ساعت: {bk.slot.time}\n\n"
+            f"منتظرتان هستیم 💈",
+            parse_mode="HTML"
+        )
     except: pass
-    await cb.message.edit_text(f"✅ نوبت #{bk_id} تایید شد.", reply_markup=back_btn("adm:bookings:today"))
+    await cb.message.edit_text(f"✅ نوبت #{bk_id} تایید شد.", reply_markup=back_btn("adm:review"))
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:bk:cancel:"))
@@ -184,9 +252,9 @@ async def adm_bk_cancel(cb: CallbackQuery, session: AsyncSession):
     await session.commit()
     try:
         await cb.bot.send_message(bk.user_id,
-            "❌ <b>نوبت شما لغو شد.</b>\nبرای نوبت جدید /start را بزنید.", parse_mode="HTML")
+            "❌ <b>نوبت شما رد شد.</b>\nبرای نوبت جدید /start را بزنید.", parse_mode="HTML")
     except: pass
-    await cb.message.edit_text(f"❌ نوبت #{bk_id} لغو شد.", reply_markup=back_btn("adm:bookings:today"))
+    await cb.message.edit_text(f"❌ نوبت #{bk_id} رد شد.", reply_markup=back_btn("adm:review"))
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:bk:done:"))
@@ -196,10 +264,37 @@ async def adm_bk_done(cb: CallbackQuery, session: AsyncSession):
     if not bk: await cb.answer("یافت نشد!", show_alert=True); return
     bk.status = BookingStatus.DONE
     await session.commit()
-    await cb.message.edit_text(f"💈 نوبت #{bk_id} انجام شد.", reply_markup=back_btn("adm:bookings:today"))
+    await cb.message.edit_text(f"💈 نوبت #{bk_id} انجام شد.", reply_markup=back_btn("adm:review"))
     await cb.answer()
 
-# ── پرداخت‌ها ─────────────────────────────────────────────────────────────────
+# ── همه نوبت‌ها ───────────────────────────────────────────────────────────────
+@router.callback_query(F.data == "adm:bookings:all")
+async def adm_bookings_all(cb: CallbackQuery, session: AsyncSession):
+    r = await session.execute(
+        select(Booking)
+        .options(selectinload(Booking.user), selectinload(Booking.service), selectinload(Booking.slot))
+        .order_by(Booking.id.desc()).limit(30)
+    )
+    bookings = r.scalars().all()
+    if not bookings:
+        await cb.message.edit_text("📋 هیچ نوبتی ثبت نشده.", reply_markup=back_btn("adm:main"))
+        await cb.answer(); return
+    S = {"pending":"⏳","confirmed":"✅","cancelled":"❌","done":"💈"}
+    kb = InlineKeyboardBuilder()
+    for b in bookings:
+        sv = b.status.value if hasattr(b.status,"value") else b.status
+        name = b.user.full_name if b.user else "—"
+        date_str = to_jalali_full(b.slot.date) if b.slot else "—"
+        time_str = b.slot.time if b.slot else "—"
+        kb.row(InlineKeyboardButton(
+            text=f"{S.get(sv,'📋')} {date_str} {time_str} — {name}",
+            callback_data=f"adm:rev:bk:{b.id}"
+        ))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
+    await cb.message.edit_text("📋 <b>آخرین ۳۰ نوبت</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
+    await cb.answer()
+
+# ── پرداخت‌های معلق ───────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:payments")
 async def adm_payments(cb: CallbackQuery, session: AsyncSession):
     r = await session.execute(
@@ -235,7 +330,6 @@ async def adm_pay_view(cb: CallbackQuery, session: AsyncSession):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 {u.full_name if u else '—'}\n"
         f"📞 {u.phone if u else '—'}\n"
-        f"📱 @{u.username if u and u.username else '—'}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"✂️ {bk.service.name if bk else '—'}\n"
         f"📅 {to_jalali_with_year(bk.slot.date) if bk else '—'}  🕐 {bk.slot.time if bk else '—'}\n"
@@ -252,11 +346,8 @@ async def adm_pay_receipt(cb: CallbackQuery, session: AsyncSession):
     if not pay or not pay.receipt_file:
         await cb.answer("رسیدی یافت نشد!", show_alert=True); return
     from app.keyboards.menus import admin_payment_kb
-    await cb.message.answer_photo(
-        photo=pay.receipt_file,
-        caption=f"🧾 رسید پرداخت #{pay_id}",
-        reply_markup=admin_payment_kb(pay_id)
-    )
+    await cb.message.answer_photo(photo=pay.receipt_file, caption=f"🧾 رسید پرداخت #{pay_id}",
+                                   reply_markup=admin_payment_kb(pay_id))
     await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:pay:confirm:"))
@@ -289,7 +380,7 @@ async def adm_pay_reject(cb: CallbackQuery, session: AsyncSession):
     await session.commit()
     try:
         await cb.bot.send_message(pay.booking.user_id,
-            "❌ <b>رسید پرداخت رد شد.</b>\nلطفاً مجدداً ارسال کنید یا با آرایشگاه تماس بگیرید.", parse_mode="HTML")
+            "❌ <b>رسید پرداخت رد شد.</b>\nلطفاً مجدداً ارسال کنید.", parse_mode="HTML")
     except: pass
     await cb.message.edit_text("❌ پرداخت رد شد.", reply_markup=back_btn("adm:payments"))
     await cb.answer()
@@ -343,7 +434,7 @@ async def svc_price(msg: Message, state: FSMContext):
     try:
         price = int(msg.text.strip().replace(",","").replace("،",""))
     except:
-        await msg.answer("❌ عدد معتبر وارد کنید:\n<i>مثال: 150000</i>", parse_mode="HTML"); return
+        await msg.answer("❌ عدد معتبر وارد کنید."); return
     await state.update_data(price=price)
     await state.set_state(ServiceFSM.duration)
     await msg.answer("⏱ <b>مدت زمان را وارد کنید (دقیقه):</b>\n<i>مثال: 30</i>", parse_mode="HTML")
@@ -353,7 +444,7 @@ async def svc_duration(msg: Message, state: FSMContext, session: AsyncSession):
     try:
         dur = int(msg.text.strip())
     except:
-        await msg.answer("❌ عدد معتبر وارد کنید:"); return
+        await msg.answer("❌ عدد معتبر وارد کنید."); return
     d = await state.get_data()
     svc = Service(name=d["name"], price=d["price"], duration=dur)
     session.add(svc)
@@ -365,44 +456,36 @@ async def svc_duration(msg: Message, state: FSMContext, session: AsyncSession):
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ── مدیریت زمان‌بندی — انتخاب خدمت → انتخاب روز → مدیریت ساعت‌ها ────────────
+# ── مدیریت زمان‌بندی — per-service ────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _show_slot_services(cb_or_msg, session: AsyncSession, state: FSMContext, edit=True):
-    """نمایش لیست خدمات برای انتخاب جهت مدیریت زمان‌بندی"""
+@router.callback_query(F.data == "adm:slots")
+async def adm_slots(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
     r = await session.execute(select(Service).order_by(Service.id))
     services = r.scalars().all()
     kb = InlineKeyboardBuilder()
     for s in services:
         icon = "🟢" if s.is_active else "🔴"
-        kb.row(InlineKeyboardButton(
-            text=f"{icon} {s.name}",
-            callback_data=f"adm:slot:svc:{s.id}"
-        ))
+        kb.row(InlineKeyboardButton(text=f"{icon} {s.name}", callback_data=f"adm:slot:svc:{s.id}"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:main"))
-    text = "🕐 <b>مدیریت زمان‌بندی</b>\n\nابتدا خدمت مورد نظر را انتخاب کنید:"
     await state.set_state(SlotFSM.pick_service)
-    if edit:
-        await cb_or_msg.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-        await cb_or_msg.answer()
-    else:
-        await cb_or_msg.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-@router.callback_query(F.data == "adm:slots")
-async def adm_slots(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
-    await _show_slot_services(cb, session, state, edit=True)
+    await cb.message.edit_text(
+        "🕐 <b>مدیریت زمان‌بندی</b>\n\nخدمت مورد نظر را انتخاب کنید:",
+        reply_markup=kb.as_markup(), parse_mode="HTML"
+    )
+    await cb.answer()
 
 @router.callback_query(F.data.startswith("adm:slot:svc:"))
-async def adm_slot_svc_picked(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
+async def adm_slot_svc(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
     svc_id = int(cb.data.split(":")[3])
     svc = await session.get(Service, svc_id)
     if not svc: await cb.answer("یافت نشد!", show_alert=True); return
     await state.update_data(service_id=svc_id, service_name=svc.name)
-    await _show_slot_date_picker(cb, svc, page=0)
+    await _show_date_picker(cb, svc, page=0)
 
-async def _show_slot_date_picker(cb: CallbackQuery, svc, page: int = 0):
-    """نمایش ۱۴ روز آینده برای انتخاب تاریخ"""
-    days = next_n_days(14)
+async def _show_date_picker(cb: CallbackQuery, svc, page: int = 0):
+    # امروز هم نمایش داده میشه (include_today=True)
+    days = next_n_days(14, include_today=True)
     start = page * 7
     week = days[start:start+7]
     kb = InlineKeyboardBuilder()
@@ -430,55 +513,47 @@ async def adm_slot_page(cb: CallbackQuery, state: FSMContext, session: AsyncSess
     d = await state.get_data()
     svc = await session.get(Service, d.get("service_id", 0))
     if not svc: await cb.answer(); return
-    await _show_slot_date_picker(cb, svc, page)
+    await _show_date_picker(cb, svc, page)
 
 @router.callback_query(F.data.startswith("adm:slot:date:"))
-async def adm_slot_date_picked(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
+async def adm_slot_date(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
     date_str = cb.data.split(":")[3]
     await state.update_data(date=date_str)
     d = await state.get_data()
-    svc_id = d.get("service_id")
-    svc = await session.get(Service, svc_id) if svc_id else None
+    svc = await session.get(Service, d.get("service_id", 0))
     await _show_slot_manage(cb, session, date_str, svc)
 
 async def _show_slot_manage(cb: CallbackQuery, session: AsyncSession, date_str: str, svc):
-    """نمایش ساعت‌های موجود + دکمه‌های حذف + افزودن"""
+    svc_id = svc.id if svc else 0
     r = await session.execute(
-        select(TimeSlot).where(TimeSlot.date == date_str).order_by(TimeSlot.time)
+        select(TimeSlot).where(TimeSlot.service_id == svc_id, TimeSlot.date == date_str)
+        .order_by(TimeSlot.time)
     )
     slots = r.scalars().all()
     jalali_label = to_jalali_with_year(date_str)
-    svc_name = svc.name if svc else "—"
-
-    kb = InlineKeyboardBuilder()
-    if slots:
-        for sl in slots:
-            booked_icon = "🔒" if sl.is_booked else "🕐"
-            kb.row(
-                InlineKeyboardButton(
-                    text=f"{booked_icon} {sl.time}",
-                    callback_data=f"adm:slot:noop:{sl.id}"
-                ),
-                InlineKeyboardButton(
-                    text="🗑 حذف" if not sl.is_booked else "⛔",
-                    callback_data=f"adm:slot:del:{sl.id}:{date_str}" if not sl.is_booked else f"adm:slot:noop:{sl.id}"
-                )
-            )
-    kb.row(InlineKeyboardButton(text="➕ افزودن ساعت", callback_data=f"adm:slot:add:{date_str}"))
-    kb.row(InlineKeyboardButton(text="🗑 حذف همه خالی‌ها", callback_data=f"adm:slot:delall:{date_str}"))
-    kb.row(InlineKeyboardButton(text="🔙 بازگشت به روزها", callback_data=f"adm:slot:svc:{svc.id if svc else 0}"))
-
     booked_count = sum(1 for s in slots if s.is_booked)
     free_count   = sum(1 for s in slots if not s.is_booked)
+
+    kb = InlineKeyboardBuilder()
+    for sl in slots:
+        icon = "🔒" if sl.is_booked else "🕐"
+        del_cb = f"adm:slot:del:{sl.id}:{date_str}" if not sl.is_booked else f"adm:slot:noop:{sl.id}"
+        del_txt = "🗑" if not sl.is_booked else "⛔"
+        kb.row(
+            InlineKeyboardButton(text=f"{icon} {sl.time}", callback_data=f"adm:slot:noop:{sl.id}"),
+            InlineKeyboardButton(text=del_txt, callback_data=del_cb)
+        )
+    kb.row(InlineKeyboardButton(text="➕ افزودن ساعت",    callback_data=f"adm:slot:add:{date_str}"))
+    kb.row(InlineKeyboardButton(text="🗑 حذف همه خالی‌ها", callback_data=f"adm:slot:delall:{date_str}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت به روزها", callback_data=f"adm:slot:svc:{svc_id}"))
+
     header = (
-        f"🕐 <b>{svc_name} — {jalali_label}</b>\n"
+        f"🕐 <b>{svc.name if svc else '—'} — {jalali_label}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"✅ آزاد: <b>{free_count}</b>  |  🔒 رزرو شده: <b>{booked_count}</b>\n"
+        f"✅ آزاد: <b>{free_count}</b>  |  🔒 رزرو: <b>{booked_count}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
     )
-    if not slots:
-        header += "<i>هیچ ساعتی ثبت نشده</i>"
-
+    if not slots: header += "<i>هیچ ساعتی ثبت نشده</i>"
     await cb.message.edit_text(header, reply_markup=kb.as_markup(), parse_mode="HTML")
     await cb.answer()
 
@@ -502,12 +577,17 @@ async def adm_slot_del(cb: CallbackQuery, session: AsyncSession, state: FSMConte
 @router.callback_query(F.data.startswith("adm:slot:delall:"))
 async def adm_slot_delall(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
     date_str = cb.data.split(":")[3]
+    d = await state.get_data()
+    svc_id = d.get("service_id", 0)
     await session.execute(
-        delete(TimeSlot).where(TimeSlot.date == date_str, TimeSlot.is_booked == False)
+        delete(TimeSlot).where(
+            TimeSlot.service_id == svc_id,
+            TimeSlot.date == date_str,
+            TimeSlot.is_booked == False
+        )
     )
     await session.commit()
-    d = await state.get_data()
-    svc = await session.get(Service, d.get("service_id", 0))
+    svc = await session.get(Service, svc_id)
     await cb.answer("✅ همه ساعت‌های خالی حذف شدند.")
     await _show_slot_manage(cb, session, date_str, svc)
 
@@ -518,10 +598,9 @@ async def adm_slot_add(cb: CallbackQuery, state: FSMContext, session: AsyncSessi
     await state.set_state(SlotFSM.add_times)
     d = await state.get_data()
     svc = await session.get(Service, d.get("service_id", 0))
-    jalali_label = to_jalali_with_year(date_str)
     await cb.message.edit_text(
         f"➕ <b>افزودن ساعت — {svc.name if svc else ''}</b>\n"
-        f"📅 {jalali_label}\n\n"
+        f"📅 {to_jalali_with_year(date_str)}\n\n"
         f"🕐 ساعت‌ها را با کاما وارد کنید:\n"
         f"<i>مثال: 09:00,10:00,11:30,14:00</i>",
         reply_markup=back_btn(f"adm:slot:date:{date_str}"), parse_mode="HTML"
@@ -532,6 +611,7 @@ async def adm_slot_add(cb: CallbackQuery, state: FSMContext, session: AsyncSessi
 async def slot_add_times(msg: Message, state: FSMContext, session: AsyncSession):
     d = await state.get_data()
     date_str = d["date"]
+    svc_id   = d.get("service_id", 0)
     raw_times = [t.strip() for t in msg.text.replace("،",",").split(",") if t.strip()]
 
     valid_times, invalid_times = [], []
@@ -543,81 +623,60 @@ async def slot_add_times(msg: Message, state: FSMContext, session: AsyncSession)
             invalid_times.append(t)
 
     if not valid_times:
-        await msg.answer(
-            "❌ هیچ ساعت معتبری وارد نشد.\n"
-            "فرمت: <code>09:00,10:00,11:30</code>", parse_mode="HTML"
-        ); return
+        await msg.answer("❌ هیچ ساعت معتبری وارد نشد.\nفرمت: <code>09:00,10:00</code>", parse_mode="HTML")
+        return
 
     added, skipped = 0, 0
     for t in valid_times:
         exists = await session.execute(
-            select(TimeSlot).where(TimeSlot.date == date_str, TimeSlot.time == t)
+            select(TimeSlot).where(TimeSlot.service_id == svc_id, TimeSlot.date == date_str, TimeSlot.time == t)
         )
         if not exists.scalar_one_or_none():
-            session.add(TimeSlot(date=date_str, time=t)); added += 1
+            session.add(TimeSlot(service_id=svc_id, date=date_str, time=t))
+            added += 1
         else:
             skipped += 1
     await session.commit()
 
-    svc = await session.get(Service, d.get("service_id", 0))
-    jalali_label = to_jalali_with_year(date_str)
+    svc = await session.get(Service, svc_id)
     result = (
-        f"✅ <b>ثبت شد — {jalali_label}</b>\n"
+        f"✅ <b>ثبت شد — {to_jalali_with_year(date_str)}</b>\n"
         f"➕ اضافه شد: <b>{added}</b>\n"
     )
     if skipped: result += f"⏭ تکراری: <b>{skipped}</b>\n"
     if invalid_times: result += f"❌ نامعتبر: <b>{', '.join(invalid_times)}</b>\n"
 
-    # برگشت به صفحه مدیریت همان روز
     r = await session.execute(
-        select(TimeSlot).where(TimeSlot.date == date_str).order_by(TimeSlot.time)
+        select(TimeSlot).where(TimeSlot.service_id == svc_id, TimeSlot.date == date_str)
+        .order_by(TimeSlot.time)
     )
     slots = r.scalars().all()
     kb = InlineKeyboardBuilder()
     for sl in slots:
-        booked_icon = "🔒" if sl.is_booked else "🕐"
+        icon = "🔒" if sl.is_booked else "🕐"
+        del_cb = f"adm:slot:del:{sl.id}:{date_str}" if not sl.is_booked else f"adm:slot:noop:{sl.id}"
         kb.row(
-            InlineKeyboardButton(text=f"{booked_icon} {sl.time}", callback_data=f"adm:slot:noop:{sl.id}"),
-            InlineKeyboardButton(
-                text="🗑 حذف" if not sl.is_booked else "⛔",
-                callback_data=f"adm:slot:del:{sl.id}:{date_str}" if not sl.is_booked else f"adm:slot:noop:{sl.id}"
-            )
+            InlineKeyboardButton(text=f"{icon} {sl.time}", callback_data=f"adm:slot:noop:{sl.id}"),
+            InlineKeyboardButton(text="🗑" if not sl.is_booked else "⛔", callback_data=del_cb)
         )
-    kb.row(InlineKeyboardButton(text="➕ افزودن بیشتر", callback_data=f"adm:slot:add:{date_str}"))
-    kb.row(InlineKeyboardButton(text="🔙 بازگشت به روزها", callback_data=f"adm:slot:svc:{svc.id if svc else 0}"))
+    kb.row(InlineKeyboardButton(text="➕ افزودن بیشتر",    callback_data=f"adm:slot:add:{date_str}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت به روزها", callback_data=f"adm:slot:svc:{svc_id}"))
     await state.set_state(SlotFSM.pick_date)
     await msg.answer(result, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ── روزهای تعطیل — با toggle فعال/غیرفعال ────────────────────────────────────
+# ── روزهای تعطیل ──────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _show_holidays(cb: CallbackQuery, session: AsyncSession):
     r = await session.execute(select(HolidayDate).order_by(HolidayDate.date))
     holidays = r.scalars().all()
-    kb = InlineKeyboardBuilder()
-    for h in holidays:
-        active = getattr(h, "is_active", True)
-        icon = "🟢" if active else "🔴"
-        label = to_jalali_with_year(h.date)
-        # ردیف اول: toggle
-        kb.row(InlineKeyboardButton(
-            text=f"{icon} {label} — {h.label or ''}",
-            callback_data=f"adm:hol:toggle:{h.id}"
-        ))
-        # ردیف دوم: حذف
-        kb.row(InlineKeyboardButton(
-            text=f"🗑 حذف {label}",
-            callback_data=f"adm:hol:del:{h.id}"
-        ))
-    kb.row(InlineKeyboardButton(text="➕ افزودن تعطیلی", callback_data="adm:hol:new"))
-    kb.row(InlineKeyboardButton(text="🔙 بازگشت",        callback_data="adm:main"))
-    text = (
-        "🎌 <b>روزهای تعطیل</b>\n"
-        "<i>🟢 فعال = در نوبت‌گیری نمایش داده نمی‌شود</i>\n"
-        "<i>🔴 غیرفعال = در نوبت‌گیری نمایش داده می‌شود</i>"
+    await cb.message.edit_text(
+        "🎌 <b>روزهای تعطیل کلی</b>\n"
+        "<i>🟢 فعال = نوبت‌گیری بسته  |  🔴 غیرفعال = نوبت‌گیری باز</i>\n"
+        "<i>برای تعطیلی اختصاصی هر خدمت، از مدیریت زمان‌بندی ساعت‌ها را حذف کنید</i>",
+        reply_markup=admin_holidays_kb(holidays), parse_mode="HTML"
     )
-    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
     await cb.answer()
 
 @router.callback_query(F.data == "adm:holidays")
@@ -635,7 +694,7 @@ async def adm_hol_toggle(cb: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "adm:hol:new")
 async def adm_hol_new(cb: CallbackQuery, state: FSMContext):
-    days = next_n_days(30)
+    days = next_n_days(30, include_today=True)
     kb = InlineKeyboardBuilder()
     for d in days:
         kb.row(InlineKeyboardButton(
@@ -667,10 +726,7 @@ async def hol_label(msg: Message, state: FSMContext, session: AsyncSession):
     d = await state.get_data()
     exists = await session.execute(select(HolidayDate).where(HolidayDate.date == d["date"]))
     if exists.scalar_one_or_none():
-        await msg.answer(
-            f"⚠️ {to_jalali_with_year(d['date'])} قبلاً ثبت شده.",
-            reply_markup=back_btn("adm:holidays")
-        )
+        await msg.answer(f"⚠️ {to_jalali_with_year(d['date'])} قبلاً ثبت شده.", reply_markup=back_btn("adm:holidays"))
         await state.clear(); return
     h = HolidayDate(date=d["date"], label=msg.text.strip(), is_active=True)
     session.add(h)
@@ -730,10 +786,7 @@ async def adm_shopinfo(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("adm:shop:set:"))
 async def adm_shop_set(cb: CallbackQuery, state: FSMContext):
     field = cb.data.split(":")[3]
-    labels = {
-        "name":"نام آرایشگاه","phone":"شماره تلفن",
-        "address":"آدرس","card":"شماره کارت","holder":"نام صاحب کارت"
-    }
+    labels = {"name":"نام آرایشگاه","phone":"شماره تلفن","address":"آدرس","card":"شماره کارت","holder":"نام صاحب کارت"}
     await state.update_data(field=field)
     await state.set_state(ShopFSM.value)
     await cb.message.edit_text(
