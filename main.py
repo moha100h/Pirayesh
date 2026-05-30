@@ -1,15 +1,30 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher
+from typing import Callable, Dict, Any, Awaitable
+from aiogram import Bot, Dispatcher, BaseMiddleware
+from aiogram.types import TelegramObject
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from app.db.models import Base
 from app.handlers import start, booking, payment, services, admin
-from app.middleware.db import DbSessionMiddleware
-from app.config import config
 from app.scheduler import start_scheduler
+from app.config import config
 
 logging.basicConfig(level=logging.INFO)
+
+class DbSessionMiddleware(BaseMiddleware):
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        async with self.session_factory() as session:
+            data["session"] = session
+            return await handler(event, data)
 
 async def main():
     engine = create_async_engine(config.DATABASE_URL, echo=False)
@@ -28,7 +43,6 @@ async def main():
     dp.include_router(payment.router)
     dp.include_router(services.router)
 
-    # یادآوری ۳۰ دقیقه‌ای به ادمین
     asyncio.create_task(start_scheduler(bot, session_factory))
 
     await bot.delete_webhook(drop_pending_updates=True)
