@@ -3,12 +3,12 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from app.services.jalali import to_jalali_full
+from app.services.jalali import to_jalali_full, to_jalali_with_year
 
 
 def main_menu(is_admin=False, booking=True, services=True, payment=True) -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardBuilder()
-    if booking: kb.row(KeyboardButton(text="📅 نوبت‌گیری"))
+    if booking:  kb.row(KeyboardButton(text="📅 نوبت‌گیری"))
     if services: kb.row(KeyboardButton(text="✂️ خدمات و قیمت‌ها"))
     kb.row(KeyboardButton(text="📋 نوبت‌های من"))
     kb.row(KeyboardButton(text="📞 اطلاعات آرایشگاه"))
@@ -132,8 +132,8 @@ def admin_main_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🏪 اطلاعات آرایشگاه", callback_data="adm:shopinfo"),
         InlineKeyboardButton(text="🎌 روزهای تعطیل",     callback_data="adm:holidays")
     )
-    kb.row(InlineKeyboardButton(text="🔧 تنظیمات",    callback_data="adm:settings"))
-    kb.row(InlineKeyboardButton(text="🔙 منوی اصلی",  callback_data="nav:main"))
+    kb.row(InlineKeyboardButton(text="🔧 تنظیمات",   callback_data="adm:settings"))
+    kb.row(InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="nav:main"))
     return kb.as_markup()
 
 
@@ -187,10 +187,18 @@ def admin_shop_info_kb() -> InlineKeyboardMarkup:
 
 
 def admin_holidays_kb(holidays: list) -> InlineKeyboardMarkup:
+    """لیست تعطیلات با دکمه toggle فعال/غیرفعال"""
     kb = InlineKeyboardBuilder()
     for h in holidays:
+        active = getattr(h, "is_active", True)
+        icon = "🟢" if active else "🔴"
+        label = to_jalali_with_year(h.date)
         kb.row(InlineKeyboardButton(
-            text=f"🗑 {to_jalali_full(h.date)} — {h.label}",
+            text=f"{icon} {label} — {h.label or ''}",
+            callback_data=f"adm:hol:toggle:{h.id}"
+        ))
+        kb.row(InlineKeyboardButton(
+            text=f"🗑 حذف {label}",
             callback_data=f"adm:hol:del:{h.id}"
         ))
     kb.row(InlineKeyboardButton(text="➕ افزودن تعطیلی", callback_data="adm:hol:new"))
