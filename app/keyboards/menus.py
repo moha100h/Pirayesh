@@ -6,7 +6,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from app.services.jalali import to_jalali_full, to_jalali_with_year
 
 
-def main_menu(is_admin=False, booking=True, services=True, payment=True) -> ReplyKeyboardMarkup:
+def main_menu(is_admin=False, booking=True, services=True) -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardBuilder()
     if booking:  kb.row(KeyboardButton(text="📅 نوبت‌گیری"))
     if services: kb.row(KeyboardButton(text="✂️ خدمات و قیمت‌ها"))
@@ -27,33 +27,12 @@ def services_kb(services: list) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def dates_kb(dates: list, service_id: int, holidays: set = None) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    holidays = holidays or set()
-    for d in dates:
-        if d in holidays:
-            continue
-        label = to_jalali_full(d)
-        kb.row(InlineKeyboardButton(text=f"📅 {label}", callback_data=f"book:date:{d}:{service_id}"))
-    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="book:back:svc"))
-    return kb.as_markup()
-
-
 def slots_kb(slots: list, service_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for sl in slots:
         kb.button(text=f"🕐 {sl.time}", callback_data=f"book:slot:{sl.id}:{service_id}")
     kb.adjust(3)
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="book:back:svc"))
-    return kb.as_markup()
-
-
-def confirm_booking_kb(slot_id: int, service_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.row(
-        InlineKeyboardButton(text="✅ تایید نوبت", callback_data=f"book:confirm:{slot_id}:{service_id}"),
-        InlineKeyboardButton(text="❌ انصراف",     callback_data="nav:main")
-    )
     return kb.as_markup()
 
 
@@ -84,16 +63,6 @@ def booking_detail_kb(booking_id: int, status: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-# ── Admin notify keyboards ────────────────────────────────────────────────────
-def admin_booking_notify_kb(booking_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.row(
-        InlineKeyboardButton(text="✅ تایید",  callback_data=f"adm:bk:confirm:{booking_id}"),
-        InlineKeyboardButton(text="❌ رد",     callback_data=f"adm:bk:cancel:{booking_id}")
-    )
-    return kb.as_markup()
-
-
 def admin_payment_notify_kb(payment_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🧾 مشاهده رسید", callback_data=f"adm:pay:receipt:{payment_id}"))
@@ -113,12 +82,11 @@ def admin_payment_kb(payment_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-# ── Admin panel keyboards ─────────────────────────────────────────────────────
 def admin_main_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
-        InlineKeyboardButton(text="📋 نوبت‌های امروز", callback_data="adm:bookings:today"),
-        InlineKeyboardButton(text="📅 همه نوبت‌ها",    callback_data="adm:bookings:all")
+        InlineKeyboardButton(text="✅ تایید/رد نوبت‌ها", callback_data="adm:review"),
+        InlineKeyboardButton(text="📅 همه نوبت‌ها",      callback_data="adm:bookings:all")
     )
     kb.row(
         InlineKeyboardButton(text="✂️ مدیریت خدمات",  callback_data="adm:services"),
@@ -137,8 +105,10 @@ def admin_main_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def admin_booking_kb(booking_id: int, status: str) -> InlineKeyboardMarkup:
+def admin_booking_kb(booking_id: int, status: str, has_receipt: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    if has_receipt:
+        kb.row(InlineKeyboardButton(text="🧾 مشاهده رسید واریز", callback_data=f"adm:bk:receipt:{booking_id}"))
     if status == "pending":
         kb.row(
             InlineKeyboardButton(text="✅ تایید",  callback_data=f"adm:bk:confirm:{booking_id}"),
@@ -149,7 +119,7 @@ def admin_booking_kb(booking_id: int, status: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💈 انجام شد", callback_data=f"adm:bk:done:{booking_id}"),
             InlineKeyboardButton(text="❌ لغو",       callback_data=f"adm:bk:cancel:{booking_id}")
         )
-    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:bookings:today"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:review"))
     return kb.as_markup()
 
 
@@ -187,20 +157,18 @@ def admin_shop_info_kb() -> InlineKeyboardMarkup:
 
 
 def admin_holidays_kb(holidays: list) -> InlineKeyboardMarkup:
-    """لیست تعطیلات با دکمه toggle فعال/غیرفعال"""
     kb = InlineKeyboardBuilder()
     for h in holidays:
         active = getattr(h, "is_active", True)
         icon = "🟢" if active else "🔴"
         label = to_jalali_with_year(h.date)
-        kb.row(InlineKeyboardButton(
-            text=f"{icon} {label} — {h.label or ''}",
-            callback_data=f"adm:hol:toggle:{h.id}"
-        ))
-        kb.row(InlineKeyboardButton(
-            text=f"🗑 حذف {label}",
-            callback_data=f"adm:hol:del:{h.id}"
-        ))
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{icon} {label} — {h.label or ''}",
+                callback_data=f"adm:hol:toggle:{h.id}"
+            ),
+            InlineKeyboardButton(text="🗑", callback_data=f"adm:hol:del:{h.id}")
+        )
     kb.row(InlineKeyboardButton(text="➕ افزودن تعطیلی", callback_data="adm:hol:new"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت",        callback_data="adm:main"))
     return kb.as_markup()
