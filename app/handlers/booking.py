@@ -32,11 +32,8 @@ async def _check_registered(event, session: AsyncSession) -> bool:
     u = await session.get(User, uid)
     if not u or not u.registered:
         text = "⚠️ ابتدا باید ثبت‌نام کنید. دستور /start را بزنید."
-        if isinstance(event, Message):
-            await event.answer(text)
-        else:
-            await event.message.answer(text)
-            await event.answer()
+        if isinstance(event, Message): await event.answer(text)
+        else: await event.message.answer(text); await event.answer()
         return False
     return True
 
@@ -61,29 +58,42 @@ async def choose_service(cb: CallbackQuery, session: AsyncSession, state: FSMCon
     await state.update_data(service_id=svc_id, service_name=svc.name, price=svc.price)
 
     days = next_3_days()
-    r_hol = await session.execute(select(HolidayDate.date))
-    holidays = {row[0] for row in r_hol.all()}
+    # تعطیلات فعال
+    r_hol = await session.execute(
+        select(HolidayDate).where(HolidayDate.is_active == True)
+    )
+    active_holidays = {h.date: h.label for h in r_hol.scalars().all()}
+
     r_slots = await session.execute(
         select(TimeSlot.date).where(TimeSlot.is_booked == False).distinct()
     )
     available_dates = {row[0] for row in r_slots.all()}
-    dates = [d for d in days if d not in holidays and d in available_dates]
 
-    if not dates:
+    kb = InlineKeyboardBuilder()
+    has_any = False
+    for d in days:
+        if d in active_holidays:
+            # روز تعطیل — نمایش می‌شه ولی غیرقابل انتخاب
+            kb.row(InlineKeyboardButton(
+                text=f"🎌 {to_jalali_with_year(d)} — {active_holidays[d]} (تعطیل)",
+                callback_data=f"book:holiday:{d}"
+            ))
+            has_any = True
+        elif d in available_dates:
+            kb.row(InlineKeyboardButton(
+                text=f"📅 {to_jalali_with_year(d)}",
+                callback_data=f"book:date:{d}:{svc_id}"
+            ))
+            has_any = True
+
+    if not has_any:
         await cb.message.edit_text(
             "⚠️ در ۳ روز آینده زمان خالی موجود نیست.\nلطفاً بعداً مراجعه کنید.",
             reply_markup=back_btn("nav:main")
         )
         await cb.answer(); return
 
-    kb = InlineKeyboardBuilder()
-    for d in dates:
-        kb.row(InlineKeyboardButton(
-            text=f"📅 {to_jalali_with_year(d)}",
-            callback_data=f"book:date:{d}:{svc_id}"
-        ))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="book:back:svc"))
-
     await state.set_state(BookingFSM.choose_date)
     await cb.message.edit_text(
         f"📅 <b>روز مورد نظر را انتخاب کنید:</b>\n"
@@ -91,6 +101,10 @@ async def choose_service(cb: CallbackQuery, session: AsyncSession, state: FSMCon
         reply_markup=kb.as_markup(), parse_mode="HTML"
     )
     await cb.answer()
+
+@router.callback_query(F.data.startswith("book:holiday:"))
+async def book_holiday(cb: CallbackQuery):
+    await cb.answer("🎌 این روز تعطیل است. لطفاً روز دیگری انتخاب کنید.", show_alert=True)
 
 @router.callback_query(F.data.startswith("book:date:"))
 async def choose_date(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
@@ -122,7 +136,6 @@ async def choose_slot(cb: CallbackQuery, session: AsyncSession, state: FSMContex
         await cb.answer("این زمان رزرو شده!", show_alert=True); return
     d = await state.get_data()
     await state.update_data(slot_id=slot_id)
-
     text = (
         f"📋 <b>تایید نوبت</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -151,12 +164,9 @@ async def confirm_booking(cb: CallbackQuery, session: AsyncSession, state: FSMCo
         await cb.answer("این زمان رزرو شده!", show_alert=True); return
     d = await state.get_data()
     u = await session.get(User, cb.from_user.id)
-
     booking = Booking(
-        user_id=cb.from_user.id,
-        service_id=d["service_id"],
-        slot_id=slot_id,
-        status=BookingStatus.PENDING
+        user_id=cb.from_user.id, service_id=d["service_id"],
+        slot_id=slot_id, status=BookingStatus.PENDING
     )
     slot.is_booked = True
     session.add(booking)
@@ -225,7 +235,7 @@ async def my_bookings(msg: Message, session: AsyncSession):
     bookings = r.scalars().all()
     active = [b for b in bookings if b.status.value in ("pending","confirmed")]
     if not active:
-        await msg.answer("📋 نوبت فعالی ندارید.", reply_markup=back_btn()); return
+        await msg.answer("📋 نوبت فعالی ندارید."); return
     await msg.answer("📋 <b>نوبت‌های فعال شما:</b>",
                      reply_markup=my_bookings_kb(active), parse_mode="HTML")
 
