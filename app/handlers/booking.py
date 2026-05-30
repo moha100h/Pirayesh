@@ -5,27 +5,22 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from app.db.models import Service, TimeSlot, Booking, User, BookingStatus, HolidayDate
-from app.keyboards.menus import (
-    services_kb, slots_kb, back_btn,
-    my_bookings_kb, booking_detail_kb,
-    admin_booking_notify_kb, payment_kb
-)
-from app.services.jalali import (
-    to_jalali_full, to_jalali_with_year,
-    next_3_days, fmt_price, today_tehran
-)
+from app.db.models import Service, TimeSlot, Booking, User, BookingStatus, HolidayDate, Payment, PaymentStatus
+from app.keyboards.menus import services_kb, slots_kb, back_btn, my_bookings_kb, booking_detail_kb, payment_kb
+from app.services.jalali import to_jalali_full, to_jalali_with_year, next_3_days, fmt_price, today_tehran
 from app.config import config
 
 router = Router()
 
 class BookingFSM(StatesGroup):
-    choose_service = State()
-    choose_date    = State()
-    choose_slot    = State()
-    confirm        = State()
+    choose_service  = State()
+    choose_date     = State()
+    choose_slot     = State()
+    contact_phone   = State()   # شماره تماس
+    waiting_payment = State()   # انتظار رسید (اگه آنلاین)
+    confirm         = State()
 
 async def _check_registered(event, session: AsyncSession) -> bool:
     uid = event.from_user.id
@@ -37,6 +32,7 @@ async def _check_registered(event, session: AsyncSession) -> bool:
         return False
     return True
 
+# ── شروع نوبت‌گیری ────────────────────────────────────────────────────────────
 @router.message(F.text == "📅 نوبت‌گیری")
 async def start_booking(msg: Message, session: AsyncSession, state: FSMContext):
     if not config.BOOKING_ENABLED:
@@ -58,14 +54,15 @@ async def choose_service(cb: CallbackQuery, session: AsyncSession, state: FSMCon
     await state.update_data(service_id=svc_id, service_name=svc.name, price=svc.price)
 
     days = next_3_days()
-    # تعطیلات فعال
-    r_hol = await session.execute(
-        select(HolidayDate).where(HolidayDate.is_active == True)
-    )
+    # تعطیلات کلی فعال
+    r_hol = await session.execute(select(HolidayDate).where(HolidayDate.is_active == True))
     active_holidays = {h.date: h.label for h in r_hol.scalars().all()}
-
+    # روزهایی که این خدمت slot خالی داره
     r_slots = await session.execute(
-        select(TimeSlot.date).where(TimeSlot.is_booked == False).distinct()
+        select(TimeSlot.date).where(
+            TimeSlot.service_id == svc_id,
+            TimeSlot.is_booked == False
+        ).distinct()
     )
     available_dates = {row[0] for row in r_slots.all()}
 
@@ -73,7 +70,6 @@ async def choose_service(cb: CallbackQuery, session: AsyncSession, state: FSMCon
     has_any = False
     for d in days:
         if d in active_holidays:
-            # روز تعطیل — نمایش می‌شه ولی غیرقابل انتخاب
             kb.row(InlineKeyboardButton(
                 text=f"🎌 {to_jalali_with_year(d)} — {active_holidays[d]} (تعطیل)",
                 callback_data=f"book:holiday:{d}"
@@ -112,8 +108,11 @@ async def choose_date(cb: CallbackQuery, session: AsyncSession, state: FSMContex
     date_str, svc_id = parts[2], int(parts[3])
     await state.update_data(date=date_str)
     r = await session.execute(
-        select(TimeSlot).where(TimeSlot.date == date_str, TimeSlot.is_booked == False)
-        .order_by(TimeSlot.time)
+        select(TimeSlot).where(
+            TimeSlot.service_id == svc_id,
+            TimeSlot.date == date_str,
+            TimeSlot.is_booked == False
+        ).order_by(TimeSlot.time)
     )
     slots = r.scalars().all()
     if not slots:
@@ -134,8 +133,32 @@ async def choose_slot(cb: CallbackQuery, session: AsyncSession, state: FSMContex
     slot = await session.get(TimeSlot, slot_id)
     if not slot or slot.is_booked:
         await cb.answer("این زمان رزرو شده!", show_alert=True); return
-    d = await state.get_data()
     await state.update_data(slot_id=slot_id)
+    await state.set_state(BookingFSM.contact_phone)
+    d = await state.get_data()
+    await cb.message.edit_text(
+        f"📋 <b>تقریباً تموم شد!</b>\n\n"
+        f"✂️ {d['service_name']}  |  📅 {to_jalali_with_year(slot.date)}  |  🕐 {slot.time}\n\n"
+        f"📞 <b>شماره تماس خود را وارد کنید:</b>\n"
+        f"<i>(این شماره برای تأیید نوبت استفاده می‌شود)</i>\n"
+        f"<i>مثال: 09123456789</i>",
+        reply_markup=back_btn("book:back:svc"), parse_mode="HTML"
+    )
+    await cb.answer()
+
+@router.message(BookingFSM.contact_phone)
+async def get_contact_phone(msg: Message, state: FSMContext, session: AsyncSession):
+    phone = msg.text.strip().replace(" ","")
+    if not (phone.startswith("09") or phone.startswith("+98")) or len(phone) < 10:
+        await msg.answer(
+            "❌ شماره معتبر نیست.\n<i>مثال: 09123456789</i>",
+            parse_mode="HTML"
+        ); return
+    await state.update_data(contact_phone=phone)
+    d = await state.get_data()
+    slot = await session.get(TimeSlot, d["slot_id"])
+
+    # نمایش خلاصه + انتخاب نوع پرداخت
     text = (
         f"📋 <b>تایید نوبت</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -143,58 +166,85 @@ async def choose_slot(cb: CallbackQuery, session: AsyncSession, state: FSMContex
         f"📅 تاریخ: <b>{to_jalali_with_year(slot.date)}</b>\n"
         f"🕐 ساعت: <b>{slot.time}</b>\n"
         f"💰 مبلغ: <b>{fmt_price(d['price'])}</b>\n"
+        f"📞 تماس: <b>{phone}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"آیا این نوبت را تایید می‌کنید؟"
+        f"نحوه پرداخت را انتخاب کنید:"
     )
     kb = InlineKeyboardBuilder()
-    kb.row(
-        InlineKeyboardButton(text="✅ تایید نوبت", callback_data=f"book:confirm:{slot_id}:{svc_id}"),
-        InlineKeyboardButton(text="❌ انصراف",     callback_data="nav:main")
-    )
+    if config.PAYMENT_ENABLED and config.CARD_NUMBER:
+        kb.row(InlineKeyboardButton(text="💳 پرداخت آنلاین (واریز کارت)", callback_data="book:pay:online"))
+    kb.row(InlineKeyboardButton(text="💵 پرداخت حضوری", callback_data="book:pay:cash"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="book:back:svc"))
     await state.set_state(BookingFSM.confirm)
-    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await msg.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+# ── پرداخت آنلاین: ارسال رسید قبل از ثبت رزرو ───────────────────────────────
+@router.callback_query(BookingFSM.confirm, F.data == "book:pay:online")
+async def book_pay_online(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(payment_type="online")
+    await state.set_state(BookingFSM.waiting_payment)
+    await cb.message.edit_text(
+        f"💳 <b>پرداخت آنلاین</b>\n\n"
+        f"مبلغ را به کارت زیر واریز کنید:\n"
+        f"<code>{config.CARD_NUMBER}</code>\n"
+        f"👤 به نام: <b>{config.CARD_HOLDER}</b>\n\n"
+        f"📸 <b>پس از واریز، تصویر رسید را ارسال کنید:</b>",
+        parse_mode="HTML"
+    )
     await cb.answer()
 
-@router.callback_query(F.data.startswith("book:confirm:"))
-async def confirm_booking(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
-    parts = cb.data.split(":")
-    slot_id, svc_id = int(parts[2]), int(parts[3])
+@router.message(BookingFSM.waiting_payment, F.photo)
+async def receipt_before_booking(msg: Message, state: FSMContext, session: AsyncSession):
+    file_id = msg.photo[-1].file_id
+    await state.update_data(receipt_file=file_id)
+    await _finalize_booking(msg, state, session, payment_type="online", receipt_file=file_id)
+
+@router.message(BookingFSM.waiting_payment, ~F.photo)
+async def receipt_not_photo(msg: Message):
+    await msg.answer("📸 لطفاً <b>تصویر</b> رسید را ارسال کنید.", parse_mode="HTML")
+
+# ── پرداخت حضوری ─────────────────────────────────────────────────────────────
+@router.callback_query(BookingFSM.confirm, F.data == "book:pay:cash")
+async def book_pay_cash(cb: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await state.update_data(payment_type="cash")
+    await _finalize_booking(cb, state, session, payment_type="cash")
+
+async def _finalize_booking(event, state: FSMContext, session: AsyncSession,
+                             payment_type: str, receipt_file: str = None):
+    d = await state.get_data()
+    slot_id = d["slot_id"]
     slot = await session.get(TimeSlot, slot_id)
     if not slot or slot.is_booked:
-        await cb.answer("این زمان رزرو شده!", show_alert=True); return
-    d = await state.get_data()
-    u = await session.get(User, cb.from_user.id)
+        text = "❌ متأسفانه این زمان توسط نفر دیگری رزرو شد. لطفاً زمان دیگری انتخاب کنید."
+        if isinstance(event, Message): await event.answer(text)
+        else: await event.message.answer(text); await event.answer()
+        await state.clear(); return
+
+    uid = event.from_user.id
+    u = await session.get(User, uid)
+
     booking = Booking(
-        user_id=cb.from_user.id, service_id=d["service_id"],
-        slot_id=slot_id, status=BookingStatus.PENDING
+        user_id=uid,
+        service_id=d["service_id"],
+        slot_id=slot_id,
+        contact_phone=d.get("contact_phone"),
+        status=BookingStatus.PENDING
     )
     slot.is_booked = True
     session.add(booking)
     await session.commit()
     await session.refresh(booking)
+
+    # ذخیره رسید اگه آنلاین
+    if payment_type == "online" and receipt_file:
+        pay = Payment(booking_id=booking.id, status=PaymentStatus.SUBMITTED, receipt_file=receipt_file)
+        session.add(pay)
+        await session.commit()
+
     await state.clear()
 
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await cb.bot.send_message(
-                admin_id,
-                f"🔔 <b>نوبت جدید ثبت شد</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"👤 <b>{u.full_name}</b>\n"
-                f"📞 {u.phone}\n"
-                f"📱 @{u.username or '—'}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"✂️ {d['service_name']}\n"
-                f"📅 {to_jalali_with_year(slot.date)}\n"
-                f"🕐 ساعت: {slot.time}\n"
-                f"💰 {fmt_price(d['price'])}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 نوبت #{booking.id}",
-                reply_markup=admin_booking_notify_kb(booking.id),
-                parse_mode="HTML"
-            )
-        except: pass
-
+    # پیام تأیید به کاربر
+    pay_text = "💳 رسید واریز ثبت شد. پس از تأیید ادمین، نوبت قطعی می‌شود." if payment_type == "online"                else "💵 پرداخت حضوری — لطفاً در زمان مقرر مراجعه کنید."
     summary = (
         f"✅ <b>نوبت شما ثبت شد!</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -202,19 +252,15 @@ async def confirm_booking(cb: CallbackQuery, session: AsyncSession, state: FSMCo
         f"📅 تاریخ: <b>{to_jalali_with_year(slot.date)}</b>\n"
         f"🕐 ساعت: <b>{slot.time}</b>\n"
         f"💰 مبلغ: <b>{fmt_price(d['price'])}</b>\n"
+        f"📞 تماس: <b>{d.get('contact_phone','—')}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
+        f"{pay_text}"
     )
-    if config.PAYMENT_ENABLED and config.CARD_NUMBER:
-        summary += (
-            f"💳 برای تایید نهایی مبلغ را به کارت زیر واریز کنید:\n"
-            f"<code>{config.CARD_NUMBER}</code>\n"
-            f"به نام: <b>{config.CARD_HOLDER}</b>"
-        )
+    if isinstance(event, Message):
+        await event.answer(summary, parse_mode="HTML")
     else:
-        summary += "پرداخت به صورت حضوری انجام می‌شود."
-
-    await cb.message.edit_text(summary, reply_markup=payment_kb(booking.id), parse_mode="HTML")
-    await cb.answer()
+        await event.message.edit_text(summary, parse_mode="HTML")
+        await event.answer()
 
 @router.callback_query(F.data.startswith("book:back:"))
 async def book_back(cb: CallbackQuery, session: AsyncSession, state: FSMContext):
@@ -225,6 +271,7 @@ async def book_back(cb: CallbackQuery, session: AsyncSession, state: FSMContext)
                                 reply_markup=services_kb(services), parse_mode="HTML")
     await cb.answer()
 
+# ── نوبت‌های من ───────────────────────────────────────────────────────────────
 @router.message(F.text == "📋 نوبت‌های من")
 async def my_bookings(msg: Message, session: AsyncSession):
     r = await session.execute(
@@ -291,9 +338,4 @@ async def mybk_cancel(cb: CallbackQuery, session: AsyncSession):
     bk.slot.is_booked = False
     await session.commit()
     await cb.message.edit_text("❌ نوبت شما لغو شد.")
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await cb.bot.send_message(admin_id,
-                f"⚠️ <b>نوبت #{bk_id} توسط کاربر لغو شد</b>", parse_mode="HTML")
-        except: pass
     await cb.answer()
