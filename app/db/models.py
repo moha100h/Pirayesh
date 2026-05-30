@@ -1,5 +1,5 @@
 from sqlalchemy import (Column, Integer, BigInteger, String, Boolean,
-                        DateTime, ForeignKey, Enum as SAEnum, Date)
+                        DateTime, ForeignKey, Enum as SAEnum)
 from sqlalchemy.orm import DeclarativeBase, relationship
 from datetime import datetime
 import enum
@@ -21,8 +21,8 @@ class User(Base):
     __tablename__ = "users"
     id         = Column(BigInteger, primary_key=True)
     full_name  = Column(String, nullable=True)
-    first_name = Column(String, nullable=True)   # legacy
-    last_name  = Column(String, nullable=True)   # legacy
+    first_name = Column(String, nullable=True)
+    last_name  = Column(String, nullable=True)
     phone      = Column(String, nullable=True)
     username   = Column(String, nullable=True)
     registered = Column(Boolean, default=False)
@@ -70,6 +70,7 @@ class Payment(Base):
 
 class HolidayDate(Base):
     __tablename__ = "holiday_dates"
-    id    = Column(Integer, primary_key=True, autoincrement=True)
-    date  = Column(String, nullable=False, unique=True)
-    label = Column(String, nullable=True)
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    date      = Column(String, nullable=False, unique=True)
+    label     = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)   # toggle فعال/غیرفعال
