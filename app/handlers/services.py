@@ -20,3 +20,24 @@ async def show_services(msg: Message, session: AsyncSession):
     for s in services:
         lines.append(f"• <b>{s.name}</b>\n  💰 {s.price:,} تومان  |  ⏱ {s.duration} دقیقه")
     await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text == "📞 اطلاعات آرایشگاه")
+async def show_shop_info(msg: Message):
+    name    = config.SHOP_NAME    or "—"
+    phone   = config.SHOP_PHONE   or "—"
+    address = config.SHOP_ADDRESS or "—"
+    card    = config.CARD_NUMBER  or "—"
+    holder  = config.CARD_HOLDER  or "—"
+
+    text = (
+        f"🏪 <b>{name}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📞 تلفن: <b>{phone}</b>\n"
+        f"📍 آدرس: <b>{address}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💳 شماره کارت:\n"
+        f"<code>{card}</code>\n"
+        f"👤 به نام: <b>{holder}</b>"
+    )
+    await msg.answer(text, parse_mode="HTML")
