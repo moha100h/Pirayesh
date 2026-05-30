@@ -21,8 +21,6 @@ class User(Base):
     __tablename__ = "users"
     id         = Column(BigInteger, primary_key=True)
     full_name  = Column(String, nullable=True)
-    first_name = Column(String, nullable=True)
-    last_name  = Column(String, nullable=True)
     phone      = Column(String, nullable=True)
     username   = Column(String, nullable=True)
     registered = Column(Boolean, default=False)
@@ -37,27 +35,31 @@ class Service(Base):
     duration  = Column(Integer, default=30)
     is_active = Column(Boolean, default=True)
     bookings  = relationship("Booking", back_populates="service")
+    slots     = relationship("TimeSlot", back_populates="service", cascade="all, delete-orphan")
 
 class TimeSlot(Base):
     __tablename__ = "time_slots"
-    id        = Column(Integer, primary_key=True, autoincrement=True)
-    date      = Column(String, nullable=False)
-    time      = Column(String, nullable=False)
-    is_booked = Column(Boolean, default=False)
-    bookings  = relationship("Booking", back_populates="slot")
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
+    date       = Column(String, nullable=False)   # YYYY-MM-DD
+    time       = Column(String, nullable=False)   # HH:MM
+    is_booked  = Column(Boolean, default=False)
+    service    = relationship("Service", back_populates="slots")
+    bookings   = relationship("Booking", back_populates="slot")
 
 class Booking(Base):
     __tablename__ = "bookings"
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    user_id    = Column(BigInteger, ForeignKey("users.id"))
-    service_id = Column(Integer, ForeignKey("services.id"))
-    slot_id    = Column(Integer, ForeignKey("time_slots.id"))
-    status     = Column(SAEnum(BookingStatus), default=BookingStatus.PENDING)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    user       = relationship("User", back_populates="bookings")
-    service    = relationship("Service", back_populates="bookings")
-    slot       = relationship("TimeSlot", back_populates="bookings")
-    payments   = relationship("Payment", back_populates="booking")
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    user_id       = Column(BigInteger, ForeignKey("users.id"))
+    service_id    = Column(Integer, ForeignKey("services.id"))
+    slot_id       = Column(Integer, ForeignKey("time_slots.id"))
+    contact_phone = Column(String, nullable=True)   # شماره تماس موقع رزرو
+    status        = Column(SAEnum(BookingStatus), default=BookingStatus.PENDING)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    user          = relationship("User", back_populates="bookings")
+    service       = relationship("Service", back_populates="bookings")
+    slot          = relationship("TimeSlot", back_populates="bookings")
+    payments      = relationship("Payment", back_populates="booking")
 
 class Payment(Base):
     __tablename__ = "payments"
@@ -73,4 +75,4 @@ class HolidayDate(Base):
     id        = Column(Integer, primary_key=True, autoincrement=True)
     date      = Column(String, nullable=False, unique=True)
     label     = Column(String, nullable=True)
-    is_active = Column(Boolean, default=True)   # toggle فعال/غیرفعال
+    is_active = Column(Boolean, default=True)
