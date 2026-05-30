@@ -41,25 +41,26 @@ class TimeSlot(Base):
     __tablename__ = "time_slots"
     id         = Column(Integer, primary_key=True, autoincrement=True)
     service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
-    date       = Column(String, nullable=False)   # YYYY-MM-DD
-    time       = Column(String, nullable=False)   # HH:MM
+    date       = Column(String, nullable=False)
+    time       = Column(String, nullable=False)
     is_booked  = Column(Boolean, default=False)
     service    = relationship("Service", back_populates="slots")
     bookings   = relationship("Booking", back_populates="slot")
 
 class Booking(Base):
     __tablename__ = "bookings"
-    id            = Column(Integer, primary_key=True, autoincrement=True)
-    user_id       = Column(BigInteger, ForeignKey("users.id"))
-    service_id    = Column(Integer, ForeignKey("services.id"))
-    slot_id       = Column(Integer, ForeignKey("time_slots.id"))
-    contact_phone = Column(String, nullable=True)   # شماره تماس موقع رزرو
-    status        = Column(SAEnum(BookingStatus), default=BookingStatus.PENDING)
-    created_at    = Column(DateTime, default=datetime.utcnow)
-    user          = relationship("User", back_populates="bookings")
-    service       = relationship("Service", back_populates="bookings")
-    slot          = relationship("TimeSlot", back_populates="bookings")
-    payments      = relationship("Payment", back_populates="booking")
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    user_id        = Column(BigInteger, ForeignKey("users.id"))
+    service_id     = Column(Integer, ForeignKey("services.id"))
+    slot_id        = Column(Integer, ForeignKey("time_slots.id"))
+    contact_phone  = Column(String, nullable=True)
+    status         = Column(SAEnum(BookingStatus), default=BookingStatus.PENDING)
+    notified_admin = Column(Boolean, default=False)   # scheduler: یه بار اطلاع داده شده
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    user           = relationship("User", back_populates="bookings")
+    service        = relationship("Service", back_populates="bookings")
+    slot           = relationship("TimeSlot", back_populates="bookings")
+    payments       = relationship("Payment", back_populates="booking")
 
 class Payment(Base):
     __tablename__ = "payments"
